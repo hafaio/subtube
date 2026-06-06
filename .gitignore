@@ -1,0 +1,8 @@
+# cache
+tsconfig.tsbuildinfo
+node_modules
+.next
+.cache
+cache
+.eslintcache
+out
