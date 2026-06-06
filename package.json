@@ -1,0 +1,39 @@
+{
+  "private": true,
+  "name": "subtube",
+  "version": "0.1.0",
+  "description": "A quiet, subscription-driven YouTube reader.",
+  "license": "MIT",
+  "author": "Erik Brinkman",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hafaio/subtube.git"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --turbo",
+    "export": "next build",
+    "fmt": "biome format --write",
+    "lint": "tsc && biome check",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "firebase": "^11.9.0",
+    "next": "^15.5.2",
+    "next-themes": "^0.4.6",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "react-icons": "^5.5.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.3",
+    "@tailwindcss/postcss": "^4.1.13",
+    "@types/node": "^24.3.1",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.0",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.13",
+    "typescript": "~5.9.2"
+  }
+}
