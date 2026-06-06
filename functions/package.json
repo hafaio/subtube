@@ -1,0 +1,22 @@
+{
+  "name": "functions",
+  "description": "subtube cloud functions: server-side youtube oauth",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "24"
+  },
+  "scripts": {
+    "build": "tsc",
+    "deploy": "firebase deploy --only functions"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0",
+    "firebase-functions": "^6.4.0",
+    "p-map": "^7.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
