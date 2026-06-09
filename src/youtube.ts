@@ -110,6 +110,7 @@ interface PlaylistItemsResponse {
     };
     contentDetails: { videoId: string; videoPublishedAt?: string };
   }>;
+  nextPageToken?: string;
 }
 
 // A channel's uploads playlist ID is its channel ID with the "UC" prefix swapped
@@ -189,6 +190,41 @@ export async function fetchVideoDetails(
     }
   }
   return details;
+}
+
+// The playable video ids of a playlist, in playlist order — used to inline a
+// playlist into the "Play all" queue. Pages through (50/call) up to `max`, which
+// also caps it to the IFrame player's queue limit. Private/deleted entries are
+// dropped so the queue doesn't stall on an unplayable id.
+export async function fetchPlaylistVideoIds(
+  playlistId: string,
+  token: string,
+  max = 200,
+): Promise<string[]> {
+  const ids: string[] = [];
+  let pageToken: string | undefined;
+  do {
+    const params: Record<string, string> = {
+      part: "snippet,contentDetails",
+      playlistId,
+      maxResults: "50",
+    };
+    if (pageToken) {
+      params.pageToken = pageToken;
+    }
+    const data = await apiGet<PlaylistItemsResponse>(
+      "/playlistItems",
+      params,
+      token,
+    );
+    for (const item of data.items) {
+      if (!HIDDEN_TITLES.has(item.snippet.title)) {
+        ids.push(item.contentDetails.videoId);
+      }
+    }
+    pageToken = data.nextPageToken;
+  } while (pageToken && ids.length < max);
+  return ids.slice(0, max);
 }
 
 export async function fetchUploads(

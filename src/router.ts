@@ -2,11 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// What the player is showing, layered over the background.
-export interface RouteItem {
-  kind: "video" | "playlist";
-  id: string;
-}
+// What the player is showing, layered over the background: a single video, a
+// real playlist, or the "queue" — every unwatched video in the current
+// background played end-to-end (its contents are derived from the feed, so the
+// route carries only the marker).
+export type RouteItem =
+  | { kind: "video"; id: string }
+  | { kind: "playlist"; id: string }
+  | { kind: "queue" };
 
 // The app is a single static page (output: "export"), and ids are
 // per-user/unbounded, so state lives in the query string: an optional `channel`
@@ -28,7 +31,9 @@ export function parseRoute(search: string): Route {
     ? { kind: "video", id: video }
     : playlist
       ? { kind: "playlist", id: playlist }
-      : null;
+      : params.has("queue")
+        ? { kind: "queue" }
+        : null;
   return { channel, item };
 }
 
@@ -43,6 +48,8 @@ function routeToUrl(route: Route): string {
     params.set("v", route.item.id);
   } else if (route.item?.kind === "playlist") {
     params.set("list", route.item.id);
+  } else if (route.item?.kind === "queue") {
+    params.set("queue", "1");
   }
   const query = params.toString();
   return query ? `${path}?${query}` : path;
