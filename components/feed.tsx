@@ -12,6 +12,7 @@ import {
 import {
   MdFilterAlt,
   MdFilterAltOff,
+  MdPlaylistPlay,
   MdRefresh,
   MdSmartDisplay,
   MdTune,
@@ -30,11 +31,19 @@ import {
   syncSubscriptions,
   unmarkWatched,
 } from "../src/firebase";
+import { buildPlayQueue, type PlayQueue } from "../src/queue";
 import { useRoute } from "../src/router";
 import { classifyShorts, SHORTS_MAX_SECONDS } from "../src/shorts";
-import type { ChannelFilter, ContentMode, FeedItem, Video } from "../src/types";
+import type {
+  ChannelFilter,
+  ContentMode,
+  FeedItem,
+  Playlist,
+  Video,
+} from "../src/types";
 import {
   fetchPlaylists,
+  fetchPlaylistVideoIds,
   fetchSubscriptions,
   fetchUploads,
   InsufficientScopeError,
@@ -145,6 +154,11 @@ export default function Feed({
   const [showWatched, setShowWatched] = useState(false);
   const [bypassFilters, setBypassFilters] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
+  // The "Play all" queue, snapshotted (with playlists expanded) when the button
+  // is pressed, so it doesn't reshape as it marks its way through. `preparing`
+  // covers the playlist fetch between press and open.
+  const [playQueue, setPlayQueue] = useState<PlayQueue | null>(null);
+  const [preparingQueue, setPreparingQueue] = useState(false);
   const { route, open, close } = useRoute();
   const channelView = route.channel;
   const openItem = route.item;
@@ -388,15 +402,14 @@ export default function Feed({
     [user.uid, watched],
   );
 
-  const handlePlay = useCallback(
+  // The player calls this when you leave a video (queue advance or close), so it
+  // marks each in turn. Idempotent: a video already watched is left untouched.
+  const markItemWatched = useCallback(
     (id: string) => {
-      if (watched.has(id)) {
-        return;
-      }
-      setWatched((prev) => new Set(prev).add(id));
+      setWatched((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
       void markWatched(user.uid, id);
     },
-    [user.uid, watched],
+    [user.uid],
   );
 
   const feed = useMemo(() => {
@@ -444,6 +457,53 @@ export default function Feed({
     bypassFilters,
     channelView,
   ]);
+
+  const hasUnwatched = useMemo(
+    () => feed.some((item) => !watched.has(feedItemId(item))),
+    [feed, watched],
+  );
+
+  // "Play all": expand every unwatched playlist in the current view into its
+  // videos (the API call the feed itself doesn't make), build the queue, and
+  // open it. Snapshotted here so it's stable while it plays.
+  const playAll = useCallback(async () => {
+    setPreparingQueue(true);
+    try {
+      const playlists = feed.filter(
+        (item): item is Playlist =>
+          item.kind === "playlist" && !watched.has(item.playlistId),
+      );
+      const fetchAll = (token: string) =>
+        mapWithConcurrency(
+          playlists,
+          FETCH_CONCURRENCY,
+          async (playlist) =>
+            [
+              playlist.playlistId,
+              await fetchPlaylistVideoIds(playlist.playlistId, token),
+            ] as const,
+        );
+      let entries: (readonly [string, string[]])[];
+      try {
+        entries = await fetchAll(await getValidToken());
+      } catch (caught) {
+        if (!(caught instanceof TokenExpiredError)) {
+          throw caught;
+        }
+        entries = await fetchAll(await silentRefresh());
+      }
+      const queue = buildPlayQueue(feed, watched, new Map(entries));
+      if (queue.videoIds.length === 0) {
+        return;
+      }
+      setPlayQueue(queue);
+      open({ channel: channelView, item: { kind: "queue" } });
+    } catch {
+      // A failed prep just leaves the queue unopened; the feed stays usable.
+    } finally {
+      setPreparingQueue(false);
+    }
+  }, [feed, watched, channelView, open]);
 
   const amberTone =
     "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200";
@@ -533,6 +593,22 @@ export default function Feed({
             aria-pressed={bypassFilters}
           >
             {bypassFilters ? <MdFilterAltOff /> : <MdFilterAlt />}
+          </button>
+          <button
+            type="button"
+            className="flex items-center rounded p-1.5 hover:bg-slate-100 disabled:opacity-50 dark:hover:bg-slate-800"
+            onClick={() => void playAll()}
+            disabled={!hasUnwatched || preparingQueue}
+            title={
+              preparingQueue
+                ? "Preparing…"
+                : hasUnwatched
+                  ? "Play all unwatched"
+                  : "No unwatched videos to play"
+            }
+            aria-label="Play all unwatched"
+          >
+            <MdPlaylistPlay className={preparingQueue ? "animate-pulse" : ""} />
           </button>
           <ThemeToggle />
           <button
@@ -645,12 +721,30 @@ export default function Feed({
         onClose={() => setShowFilters(false)}
       />
 
-      {openItem ? (
+      {openItem?.kind === "playlist" ? (
         <Player
-          kind={openItem.kind}
-          id={openItem.id}
+          key={`list:${openItem.id}`}
+          kind="playlist"
+          playlistId={openItem.id}
           onClose={close}
-          onPlay={() => handlePlay(openItem.id)}
+          onWatched={markItemWatched}
+        />
+      ) : openItem?.kind === "video" ? (
+        <Player
+          key={`v:${openItem.id}`}
+          kind="video"
+          videoIds={[openItem.id]}
+          onClose={close}
+          onWatched={markItemWatched}
+        />
+      ) : openItem?.kind === "queue" && playQueue ? (
+        <Player
+          key="queue"
+          kind="video"
+          videoIds={playQueue.videoIds}
+          marks={playQueue.marks}
+          onClose={close}
+          onWatched={markItemWatched}
         />
       ) : null}
     </div>
