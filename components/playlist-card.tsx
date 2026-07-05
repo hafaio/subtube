@@ -9,12 +9,14 @@ export default function PlaylistCard({
   onOpen,
   onOpenChannel,
   onToggleWatched,
+  disabled = false,
 }: {
   playlist: Playlist;
   watched: boolean;
   onOpen: () => void;
   onOpenChannel: () => void;
   onToggleWatched: () => void;
+  disabled?: boolean;
 }): ReactElement {
   const published = new Date(playlist.publishedAt);
   return (
@@ -25,6 +27,7 @@ export default function PlaylistCard({
         type="button"
         className="relative aspect-video w-full bg-slate-200 dark:bg-slate-700"
         onClick={onOpen}
+        title="Play playlist"
         aria-label={`Play ${playlist.title}`}
       >
         {playlist.thumbnail ? (
@@ -62,8 +65,9 @@ export default function PlaylistCard({
           <span>{published.toLocaleDateString()}</span>
           <button
             type="button"
-            className="flex items-center text-base hover:text-slate-900 dark:hover:text-slate-200"
+            className="flex items-center text-base hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-slate-200"
             onClick={onToggleWatched}
+            disabled={disabled}
             title={watched ? "Mark as unwatched" : "Mark as watched"}
             aria-label={watched ? "Mark as unwatched" : "Mark as watched"}
           >

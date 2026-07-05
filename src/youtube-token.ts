@@ -54,10 +54,14 @@ export async function connectYouTube(): Promise<void> {
   apply(await runConnectFlow());
 }
 
-// Revoke the grant server-side and drop the in-memory token.
+/**
+ * Revoke the grant server-side, then drop the in-memory token. The order
+ * matters: if the backend call fails the token is left intact so the app's
+ * state stays consistent with the server (which still holds the refresh token).
+ */
 export async function disconnectYouTube(): Promise<void> {
-  clearToken();
   await backendDisconnect();
+  clearToken();
 }
 
 export async function getValidToken(): Promise<string> {

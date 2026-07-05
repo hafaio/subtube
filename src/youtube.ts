@@ -154,7 +154,9 @@ function classifyLiveStatus(
 // Parse an ISO 8601 duration (e.g. "PT1H2M3S", "P1DT4M") to seconds. Live and
 // upcoming videos report "P0D" (no time part), which yields 0.
 export function parseIsoDuration(iso: string): number {
-  const match = /^P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(iso);
+  const match = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(
+    iso,
+  );
   if (!match) {
     return 0;
   }
@@ -192,10 +194,12 @@ export async function fetchVideoDetails(
   return details;
 }
 
-// The playable video ids of a playlist, in playlist order — used to inline a
-// playlist into the "Play all" queue. Pages through (50/call) up to `max`, which
-// also caps it to the IFrame player's queue limit. Private/deleted entries are
-// dropped so the queue doesn't stall on an unplayable id.
+/**
+ * The playable video ids of a playlist, in playlist order — used to inline a
+ * playlist into the "Play all" queue. Pages through (50/call) up to `max`, which
+ * also caps it to the IFrame player's queue limit. Private/deleted entries are
+ * dropped so the queue doesn't stall on an unplayable id.
+ */
 export async function fetchPlaylistVideoIds(
   playlistId: string,
   token: string,

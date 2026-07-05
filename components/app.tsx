@@ -96,12 +96,10 @@ export default function App(): ReactElement {
     }
   }, []);
 
+  // drop to disconnected only after the server revokes; on failure this rejects (Feed surfaces it) and stays connected
   const disconnect = useCallback(async () => {
-    try {
-      await disconnectYouTube();
-    } finally {
-      setReady(false);
-    }
+    await disconnectYouTube();
+    setReady(false);
   }, []);
 
   if (isCallback) {

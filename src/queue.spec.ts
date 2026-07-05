@@ -78,4 +78,24 @@ describe("buildPlayQueue", () => {
     );
     expect(videoIds).toEqual(["a"]);
   });
+
+  test("caps the queue at max, stopping once it's full", () => {
+    const items: FeedItem[] = [video("a"), video("b"), video("c")];
+    const { videoIds } = buildPlayQueue(items, new Set(), new Map(), 2);
+    expect(videoIds).toEqual(["a", "b"]);
+  });
+
+  test("skips a playlist that wouldn't fit whole, keeping its mark reachable", () => {
+    const items: FeedItem[] = [video("a"), playlist("PL1"), video("b")];
+    const playlistIds = new Map([["PL1", ["x", "y", "z"]]]);
+    // budget of 2: "a" fits, PL1 (3 ids) doesn't fit and is skipped, "b" still fits; PL1's mark stays reachable
+    const { videoIds, marks } = buildPlayQueue(
+      items,
+      new Set(),
+      playlistIds,
+      2,
+    );
+    expect(videoIds).toEqual(["a", "b"]);
+    expect(marks.has("z")).toBe(false);
+  });
 });

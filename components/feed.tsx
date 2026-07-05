@@ -122,6 +122,8 @@ interface FeedData {
   channels: Map<string, ChannelFilter>;
   watched: Set<string>;
   items: FeedItem[];
+  // at least one channel's fetch failed non-fatally (e.g. quota 403); result is partial, don't cache it
+  partial: boolean;
 }
 
 export default function Feed({
@@ -138,7 +140,7 @@ export default function Feed({
   checking: boolean;
   connecting: boolean;
   onReconnect: () => void;
-  onDisconnect: () => void;
+  onDisconnect: () => Promise<void>;
   onTokenLost: () => void;
 }): ReactElement {
   const [channels, setChannels] = useState<Map<string, ChannelFilter>>(
@@ -159,6 +161,8 @@ export default function Feed({
   // covers the playlist fetch between press and open.
   const [playQueue, setPlayQueue] = useState<PlayQueue | null>(null);
   const [preparingQueue, setPreparingQueue] = useState(false);
+  // non-fatal buttonless banner, separate from `error` (which pairs with a Connect button)
+  const [notice, setNotice] = useState<string | null>(null);
   const { route, open, close } = useRoute();
   const channelView = route.channel;
   const openItem = route.item;
@@ -181,6 +185,7 @@ export default function Feed({
       const enabled = Array.from(merged.values()).filter(
         (channel) => channel.enabled,
       );
+      let failed = 0;
       const loaded = await mapWithConcurrency(
         enabled,
         FETCH_CONCURRENCY,
@@ -201,6 +206,7 @@ export default function Feed({
             ) {
               throw caught;
             }
+            failed++;
             return [] as FeedItem[];
           }
         },
@@ -210,6 +216,7 @@ export default function Feed({
         channels: merged,
         watched: enriched.watched,
         items: enriched.items,
+        partial: failed > 0,
       };
     },
     [user.uid],
@@ -238,16 +245,23 @@ export default function Feed({
         // The token died mid-load; mint a fresh one silently and retry once.
         data = await fetchEverything(await silentRefresh());
       }
+      // edits and toggles are disabled while loading, so nothing's in-flight to reconcile — replace outright
       setChannels(data.channels);
       setWatched(data.watched);
       setHiddenWatched(data.watched);
       setItems(data.items);
-      void saveCachedFeed(user.uid, {
-        channels: data.channels,
-        watched: data.watched,
-        items: data.items,
-        cachedAt: Date.now(),
-      });
+      // a partial load must not overwrite the good cache; surface a notice instead
+      if (data.partial) {
+        setNotice("Some channels couldn't be loaded; showing partial results.");
+      } else {
+        setNotice(null);
+        void saveCachedFeed(user.uid, {
+          channels: data.channels,
+          watched: data.watched,
+          items: data.items,
+          cachedAt: Date.now(),
+        });
+      }
     } catch (caught) {
       if (caught instanceof TokenExpiredError) {
         onTokenLost();
@@ -270,25 +284,6 @@ export default function Feed({
       void loadFeed();
     }
   }, [ready, loadFeed]);
-
-  // Paint the last cached feed immediately on mount, before (and during) the
-  // fresh load — but never clobber data that the fresh load already set.
-  useEffect(() => {
-    let cancelled = false;
-    void loadCachedFeed(user.uid).then((cached) => {
-      if (cancelled || !cached) {
-        return;
-      }
-      setChannels((prev) => (prev.size ? prev : cached.channels));
-      setWatched((prev) => (prev.size ? prev : cached.watched));
-      setHiddenWatched((prev) => (prev.size ? prev : cached.watched));
-      // `?? []` tolerates a pre-playlists cache that lacks the items field.
-      setItems((prev) => (prev.length ? prev : (cached.items ?? [])));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [user.uid]);
 
   // Enabled channels are already in the loaded feed; only a disabled (or unknown)
   // channel's page needs an on-demand fetch. Keying on the content mode too means
@@ -498,12 +493,23 @@ export default function Feed({
       }
       setPlayQueue(queue);
       open({ channel: channelView, item: { kind: "queue" } });
-    } catch {
-      // A failed prep just leaves the queue unopened; the feed stays usable.
+    } catch (caught) {
+      // mirror loadFeed's error handling; the queue just stays unopened, feed stays usable
+      if (caught instanceof InsufficientScopeError) {
+        onTokenLost();
+        setError(
+          "subtube needs permission to read your YouTube account. Click Reconnect and allow YouTube access.",
+        );
+      } else if (caught instanceof TokenExpiredError) {
+        onTokenLost();
+        setError("Your YouTube session ended. Reconnect to refresh.");
+      } else {
+        setError((caught as Error).message);
+      }
     } finally {
       setPreparingQueue(false);
     }
-  }, [feed, watched, channelView, open]);
+  }, [feed, watched, channelView, open, onTokenLost]);
 
   const amberTone =
     "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200";
@@ -624,7 +630,14 @@ export default function Feed({
         <AccountMenu
           user={user}
           ready={ready}
-          onDisconnect={onDisconnect}
+          onDisconnect={() => {
+            setError(null);
+            void onDisconnect().catch((caught) =>
+              setError(
+                `Couldn't disconnect YouTube: ${(caught as Error).message}`,
+              ),
+            );
+          }}
           onSignOut={() => void signOutUser()}
         />
       </header>
@@ -645,12 +658,29 @@ export default function Feed({
         </div>
       ) : null}
 
+      {notice ? (
+        <div
+          className={`flex min-h-11 items-center gap-3 px-4 py-2 text-sm ${amberTone}`}
+        >
+          <span>{notice}</span>
+          <button
+            type="button"
+            className="ml-auto shrink-0 rounded px-2 py-1 hover:bg-amber-200 dark:hover:bg-amber-800/40"
+            onClick={() => setNotice(null)}
+            aria-label="Dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
       <main className="mx-auto grid max-w-7xl grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-4 p-4">
         {feed.map((item) =>
           item.kind === "playlist" ? (
             <PlaylistCard
               key={item.playlistId}
               playlist={item}
+              disabled={loading}
               watched={watched.has(item.playlistId)}
               onOpen={() =>
                 open({
@@ -669,6 +699,7 @@ export default function Feed({
             <VideoCard
               key={item.videoId}
               video={item}
+              disabled={loading}
               watched={watched.has(item.videoId)}
               onOpen={() =>
                 open({
@@ -687,7 +718,7 @@ export default function Feed({
         )}
       </main>
 
-      {loading && feed.length === 0 ? (
+      {(loading || checking) && feed.length === 0 ? (
         <p className="p-8 text-center text-slate-500 dark:text-slate-400">
           Loading your subscriptions…
         </p>
@@ -710,6 +741,7 @@ export default function Feed({
 
       <ChannelFilters
         open={showFilters}
+        disabled={loading}
         channels={Array.from(channels.values())}
         latest={latestByChannel}
         items={items}
