@@ -166,6 +166,8 @@ async function probeOnce(videoId: string): Promise<boolean | null> {
       },
       signal: controller.signal,
     });
+    // cancel the unread body so undici frees the socket (a 200 is full HTML) instead of holding it until GC
+    void response.body?.cancel();
     if (response.status === 200) {
       return true;
     }

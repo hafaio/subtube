@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactElement, useEffect, useRef } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 
 // Minimal typings for the subset of the YouTube IFrame Player API we use.
 interface VideoData {
@@ -69,7 +69,7 @@ function loadIframeApi(): Promise<void> {
   if (apiPromise) {
     return apiPromise;
   }
-  apiPromise = new Promise<void>((resolve) => {
+  apiPromise = new Promise<void>((resolve, reject) => {
     const priorCallback = window.onYouTubeIframeAPIReady;
     window.onYouTubeIframeAPIReady = () => {
       priorCallback?.();
@@ -77,6 +77,12 @@ function loadIframeApi(): Promise<void> {
     };
     const script = document.createElement("script");
     script.src = "https://www.youtube.com/iframe_api";
+    // reset apiPromise on failure so reopening retries (else it stays pending forever)
+    script.onerror = () => {
+      apiPromise = null;
+      script.remove();
+      reject(new Error("Couldn't load the YouTube player."));
+    };
     document.head.appendChild(script);
   });
   return apiPromise;
@@ -117,6 +123,7 @@ type PlayerProps = {
 export default function Player(props: PlayerProps): ReactElement {
   const { onClose, onWatched } = props;
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const onWatchedRef = useRef(onWatched);
   onWatchedRef.current = onWatched;
   const onCloseRef = useRef(onClose);
@@ -174,76 +181,82 @@ export default function Player(props: PlayerProps): ReactElement {
     let currentVideoId: string | null =
       kind === "video" ? (queue[0] ?? null) : null;
 
-    void loadIframeApi().then(() => {
-      const namespace = window.YT;
-      if (cancelled || !namespace || !wrapperRef.current) {
-        return;
-      }
-      host = document.createElement("div");
-      wrapperRef.current.appendChild(host);
-      player = new namespace.Player(host, {
-        width: "100%",
-        height: "100%",
-        // A real playlist loads via listType/list; a video queue is loaded from
-        // its id array in onReady (combining videoId with the `playlist` param
-        // unreliably drops the first id).
-        ...(kind === "playlist"
-          ? {
-              playerVars: {
-                autoplay: 1,
-                rel: 0,
-                listType: "playlist",
-                list: playlistId,
-              },
-            }
-          : { playerVars: { rel: 0 } }),
-        events: {
-          onReady: (event) => {
-            if (cancelled) {
-              return;
-            }
-            // loadPlaylist plays the whole id list from the top, auto-advancing.
-            if (kind === "video") {
-              event.target.loadPlaylist?.(queue, 0);
-            }
-            // Focus the iframe so the player's keyboard shortcuts (space, arrows,
-            // f, m, …) work immediately, without a click into the video first.
-            event.target.getIframe().focus({ preventScroll: true });
-          },
-          onStateChange: (event) => {
-            if (event.data === namespace.PlayerState.PLAYING) {
-              started = true;
-            }
-            if (kind === "playlist") {
-              // Mark the whole playlist watched once its final video ends.
-              // getPlaylist() is what the player actually loaded (auto-advance
-              // already skipped any unavailable videos), so the last index is
-              // the true end of the playlist.
-              const playlist = event.target.getPlaylist?.();
-              if (
-                event.data === namespace.PlayerState.ENDED &&
-                playlist &&
-                event.target.getPlaylistIndex?.() === playlist.length - 1
-              ) {
-                onWatchedRef.current(playlistId);
+    void loadIframeApi()
+      .then(() => {
+        const namespace = window.YT;
+        if (cancelled || !namespace || !wrapperRef.current) {
+          return;
+        }
+        host = document.createElement("div");
+        wrapperRef.current.appendChild(host);
+        player = new namespace.Player(host, {
+          width: "100%",
+          height: "100%",
+          // A real playlist loads via listType/list; a video queue is loaded from
+          // its id array in onReady (combining videoId with the `playlist` param
+          // unreliably drops the first id).
+          ...(kind === "playlist"
+            ? {
+                playerVars: {
+                  autoplay: 1,
+                  rel: 0,
+                  listType: "playlist",
+                  list: playlistId,
+                },
               }
-              return;
-            }
-            // The queue auto-advanced: mark the video we just left, then track
-            // the new one (marked in turn when it's left or on close).
-            const nextId = event.target.getVideoData?.().video_id;
-            if (nextId && nextId !== currentVideoId) {
-              const markId =
-                currentVideoId && started && markFor(currentVideoId);
-              if (markId) {
-                onWatchedRef.current(markId);
+            : { playerVars: { rel: 0 } }),
+          events: {
+            onReady: (event) => {
+              if (cancelled) {
+                return;
               }
-              currentVideoId = nextId;
-            }
+              // loadPlaylist plays the whole id list from the top, auto-advancing.
+              if (kind === "video") {
+                event.target.loadPlaylist?.(queue, 0);
+              }
+              // Focus the iframe so the player's keyboard shortcuts (space, arrows,
+              // f, m, …) work immediately, without a click into the video first.
+              event.target.getIframe().focus({ preventScroll: true });
+            },
+            onStateChange: (event) => {
+              if (event.data === namespace.PlayerState.PLAYING) {
+                started = true;
+              }
+              if (kind === "playlist") {
+                // Mark the whole playlist watched once its final video ends.
+                // getPlaylist() is what the player actually loaded (auto-advance
+                // already skipped any unavailable videos), so the last index is
+                // the true end of the playlist.
+                const playlist = event.target.getPlaylist?.();
+                if (
+                  event.data === namespace.PlayerState.ENDED &&
+                  playlist &&
+                  event.target.getPlaylistIndex?.() === playlist.length - 1
+                ) {
+                  onWatchedRef.current(playlistId);
+                }
+                return;
+              }
+              // The queue auto-advanced: mark the video we just left, then track
+              // the new one (marked in turn when it's left or on close).
+              const nextId = event.target.getVideoData?.().video_id;
+              if (nextId && nextId !== currentVideoId) {
+                const markId =
+                  currentVideoId && started && markFor(currentVideoId);
+                if (markId) {
+                  onWatchedRef.current(markId);
+                }
+                currentVideoId = nextId;
+              }
+            },
           },
-        },
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLoadFailed(true);
+        }
       });
-    });
 
     return () => {
       cancelled = true;
@@ -275,7 +288,14 @@ export default function Player(props: PlayerProps): ReactElement {
         <div
           className="aspect-video w-full overflow-hidden rounded-lg bg-black"
           ref={wrapperRef}
-        />
+        >
+          {loadFailed ? (
+            <div className="grid h-full place-items-center p-6 text-center text-slate-300 text-sm">
+              Couldn't load the YouTube player. Check your connection or any
+              content blockers, then close and reopen.
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );

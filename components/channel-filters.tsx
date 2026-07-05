@@ -54,8 +54,10 @@ export default function ChannelFilters({
   onChange,
   onOpenChannel,
   onClose,
+  disabled = false,
 }: {
   open: boolean;
+  disabled?: boolean;
   channels: ChannelFilter[];
   // channelId -> most recent item publishedAt, for ordering.
   latest: Map<string, string>;
@@ -166,7 +168,9 @@ export default function ChannelFilters({
             Done
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div
+          className={`flex-1 overflow-y-auto ${disabled ? "pointer-events-none opacity-60" : ""}`}
+        >
           {visible.map((channel) => (
             <ChannelRow
               key={channel.channelId}

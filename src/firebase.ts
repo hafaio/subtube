@@ -67,14 +67,19 @@ export async function saveChannelFilter(
   await setDoc(doc(channelsCollection(userId), filter.channelId), filter);
 }
 
-// Create default filters for newly seen subscriptions and refresh stored titles
-// and thumbnails, while preserving any regex/enabled choices already made.
+/**
+ * Reconcile stored filters against the live subscriptions: create defaults for
+ * newly seen channels and refresh stored titles/thumbnails. The result contains
+ * only channels you currently subscribe to, so a channel you've unsubscribed
+ * from stops being fetched and shown — but its stored filter doc is left in
+ * Firestore untouched, so resubscribing restores your regex/enabled choices.
+ */
 export async function syncSubscriptions(
   userId: string,
   subscriptions: Subscription[],
   existing: Map<string, ChannelFilter>,
 ): Promise<Map<string, ChannelFilter>> {
-  const merged = new Map(existing);
+  const merged = new Map<string, ChannelFilter>();
   const writes: Array<Promise<void>> = [];
   for (const subscription of subscriptions) {
     const prior = existing.get(subscription.channelId);
@@ -90,6 +95,8 @@ export async function syncSubscriptions(
         };
         merged.set(subscription.channelId, updated);
         writes.push(saveChannelFilter(userId, updated));
+      } else {
+        merged.set(subscription.channelId, prior);
       }
     } else {
       const fresh: ChannelFilter = {

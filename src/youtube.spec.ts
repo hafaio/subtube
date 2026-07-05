@@ -19,6 +19,11 @@ describe("parseIsoDuration", () => {
     expect(parseIsoDuration("P1DT2H")).toBe(93600);
   });
 
+  test("parses a whole-day duration with no time part", () => {
+    expect(parseIsoDuration("P1D")).toBe(86400);
+    expect(parseIsoDuration("P2D")).toBe(172800);
+  });
+
   test("live/upcoming (P0D) and unparseable input yield 0", () => {
     expect(parseIsoDuration("P0D")).toBe(0);
     expect(parseIsoDuration("")).toBe(0);
