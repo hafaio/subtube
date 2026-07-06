@@ -25,8 +25,10 @@ function db() {
   return getFirestore(firebaseApp());
 }
 
-// Sign in for identity only. YouTube authorization is a separate Authorization
-// Code flow (see youtube-auth.ts), handled server-side so we get a refresh token.
+/**
+ * Sign in for identity only. YouTube authorization is a separate Authorization
+ * Code flow (see youtube-auth.ts), handled server-side so we get a refresh token.
+ */
 export async function signIn(): Promise<void> {
   const provider = new GoogleAuthProvider();
   await signInWithPopup(getAuth(firebaseApp()), provider);
@@ -118,9 +120,11 @@ export async function syncSubscriptions(
 // Firestore caps an `in` query at 30 values, so membership lookups batch.
 const WATCHED_QUERY_CHUNK = 30;
 
-// Return the subset of the given video ids the user has watched. Scoping the
-// lookup to the loaded feed (rather than reading the whole watched collection)
-// keeps the read O(feed window) instead of O(lifetime history).
+/**
+ * Return the subset of the given video ids the user has watched. Scoping the
+ * lookup to the loaded feed (rather than reading the whole watched collection)
+ * keeps the read O(feed window) instead of O(lifetime history).
+ */
 export async function loadWatchedFor(
   userId: string,
   videoIds: string[],

@@ -1,5 +1,7 @@
-// Public web config; safe to commit. Replace with your Firebase project's values
-// (Project settings -> General -> Your apps -> SDK setup and configuration).
+/*
+ * Public web config; safe to commit. Replace with your Firebase project's values
+ * (Project settings -> General -> Your apps -> SDK setup and configuration).
+ */
 export const firebaseConfig = {
   apiKey: "AIzaSyDimHr1ESulbKwTg7VHyJyvHNgzvq8awhk",
   authDomain: "subtube-dev.firebaseapp.com",

@@ -23,8 +23,10 @@ const LABEL: Record<ThemeChoice, string> = {
   dark: "Dark",
 };
 
-// Cycles system → light → dark. next-themes owns persistence and the pre-paint
-// class on <html>; this is just the control surface.
+/**
+ * Cycles system → light → dark. next-themes owns persistence and the pre-paint
+ * class on <html>; this is just the control surface.
+ */
 export default function ThemeToggle(): ReactElement | null {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);

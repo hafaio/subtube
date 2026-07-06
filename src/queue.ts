@@ -12,7 +12,8 @@ export interface PlayQueue {
   marks: Map<string, string>;
 }
 
-// the IFrame player truncates a loaded queue past this many ids, so cap here too (else a playlist past the cutoff loses its mark)
+// the IFrame player truncates a loaded queue past this many ids, so cap here
+// too (else a playlist past the cutoff loses its mark)
 export const MAX_QUEUE = 200;
 
 /**

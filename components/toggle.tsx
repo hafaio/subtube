@@ -1,6 +1,8 @@
 import type { ReactElement } from "react";
 
-// A small themed on/off switch (pill), used in place of a checkbox.
+/**
+ * A small themed on/off switch (pill), used in place of a checkbox.
+ */
 export default function Toggle({
   checked,
   onChange,

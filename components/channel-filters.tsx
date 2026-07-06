@@ -259,8 +259,10 @@ const CONTENT_MODE_ICON: Record<ContentMode, IconType> = {
 const CONTROL_CLASS =
   "flex shrink-0 items-center rounded border border-slate-300 p-1 text-base text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800";
 
-// Whether the channel feeds its uploads or its playlists — a per-channel setting
-// (not a filter), so it sits by the enable switch and in the tester header.
+/**
+ * Whether the channel feeds its uploads or its playlists — a per-channel setting
+ * (not a filter), so it sits by the enable switch and in the tester header.
+ */
 function ContentModeToggle({
   channel,
   onChange,
@@ -285,9 +287,11 @@ function ContentModeToggle({
   );
 }
 
-// Per-channel filter controls shared by the sidebar row and the tester modal:
-// case sensitivity, include/exclude, and search scope — all icon buttons that
-// switch glyph by state (no highlight) to match the rest of the UI.
+/**
+ * Per-channel filter controls shared by the sidebar row and the tester modal:
+ * case sensitivity, include/exclude, and search scope — all icon buttons that
+ * switch glyph by state (no highlight) to match the rest of the UI.
+ */
 function FilterControls({
   channel,
   onChange,
@@ -476,7 +480,9 @@ function describePreview(description: string): { head: string; tail: string } {
   };
 }
 
-// Wrap each regex match in the title with a YouTube-red highlight.
+/**
+ * Wrap each regex match in the title with a YouTube-red highlight.
+ */
 function highlightMatches(title: string, regex: RegExp | null): ReactNode {
   if (!regex) {
     return title;
@@ -520,9 +526,11 @@ function highlightMatches(title: string, regex: RegExp | null): ReactNode {
   return parts;
 }
 
-// Live preview of a channel's regex against its recent items (videos or
-// playlists): matched text is highlighted (whatever the mode), and items the
-// filter would hide are dimmed — so it's easy to spot a too-broad regex.
+/**
+ * Live preview of a channel's regex against its recent items (videos or
+ * playlists): matched text is highlighted (whatever the mode), and items the
+ * filter would hide are dimmed — so it's easy to spot a too-broad regex.
+ */
 function RegexTester({
   channel,
   items,
