@@ -79,10 +79,12 @@ async function mapWithConcurrency<Item, Result>(
   return results;
 }
 
-// Attach Shorts verdicts and watched-state to freshly fetched items. Shared by
-// the full feed load and the on-demand single-channel load. A video's Short-ness
-// never changes, so verdicts are reused from the last cached feed and only new
-// candidates (sub-3-min videos) are classified.
+/**
+ * Attach Shorts verdicts and watched-state to freshly fetched items. Shared by
+ * the full feed load and the on-demand single-channel load. A video's Short-ness
+ * never changes, so verdicts are reused from the last cached feed and only new
+ * candidates (sub-3-min videos) are classified.
+ */
 async function enrichItems(
   uid: string,
   items: FeedItem[],

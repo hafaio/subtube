@@ -22,8 +22,10 @@ function callable<Request, Response>(name: string) {
   return httpsCallable<Request, Response>(getFunctions(firebaseApp()), name);
 }
 
-// Mint a fresh access token from the server-held refresh token. No UI: this is
-// what lets a reload restore YouTube access without a popup.
+/**
+ * Mint a fresh access token from the server-held refresh token. No UI: this is
+ * what lets a reload restore YouTube access without a popup.
+ */
 export async function backendRefresh(): Promise<TokenResult> {
   const { data } = await callable<unknown, TokenResult>(
     "refreshYouTubeToken",
@@ -31,7 +33,9 @@ export async function backendRefresh(): Promise<TokenResult> {
   return data;
 }
 
-// Revoke the grant with Google and forget the server-held refresh token.
+/**
+ * Revoke the grant with Google and forget the server-held refresh token.
+ */
 export async function backendDisconnect(): Promise<void> {
   await callable<unknown, { ok: true }>("disconnectYouTube")();
 }
@@ -47,8 +51,10 @@ async function backendExchange(
   return data;
 }
 
-// Run the interactive Authorization Code flow in a popup, then exchange the code
-// server-side. Must be called from a user gesture so the popup isn't blocked.
+/**
+ * Run the interactive Authorization Code flow in a popup, then exchange the code
+ * server-side. Must be called from a user gesture so the popup isn't blocked.
+ */
 export async function runConnectFlow(): Promise<TokenResult> {
   // Redirect back to the app's own URL. Using the live pathname (minus any
   // trailing slash) bakes in whatever basePath the deploy uses — origin at the
@@ -120,7 +126,9 @@ export async function runConnectFlow(): Promise<TokenResult> {
   return backendExchange(code, redirectUri);
 }
 
-// True when this document is the popup landing on the redirect URI with a code.
+/**
+ * True when this document is the popup landing on the redirect URI with a code.
+ */
 export function isOAuthCallback(): boolean {
   if (typeof window === "undefined" || !window.opener) {
     return false;
@@ -129,7 +137,9 @@ export function isOAuthCallback(): boolean {
   return params.has("code") || params.has("error");
 }
 
-// Hand the code (or error) back to the opener and close the popup.
+/**
+ * Hand the code (or error) back to the opener and close the popup.
+ */
 export function completeOAuthCallback(): void {
   const params = new URLSearchParams(window.location.search);
   const message: CallbackMessage = {

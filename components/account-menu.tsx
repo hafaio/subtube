@@ -2,8 +2,10 @@ import type { User } from "firebase/auth";
 import Image from "next/image";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
-// The signed-in profile picture; clicking opens a small menu with the
-// less-prominent account actions (disconnect YouTube, sign out).
+/**
+ * The signed-in profile picture; clicking opens a small menu with the
+ * less-prominent account actions (disconnect YouTube, sign out).
+ */
 export default function AccountMenu({
   user,
   ready,

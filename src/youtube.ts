@@ -10,8 +10,10 @@ export class TokenExpiredError extends Error {
   }
 }
 
-// The token is valid but was granted without youtube.readonly — i.e. the user
-// signed in but skipped the YouTube permission. Recoverable by re-consenting.
+/**
+ * The token is valid but was granted without youtube.readonly — i.e. the user
+ * signed in but skipped the YouTube permission. Recoverable by re-consenting.
+ */
 export class InsufficientScopeError extends Error {
   constructor() {
     super("YouTube access was granted without the read permission");
@@ -113,8 +115,10 @@ interface PlaylistItemsResponse {
   nextPageToken?: string;
 }
 
-// A channel's uploads playlist ID is its channel ID with the "UC" prefix swapped
-// for "UU", which lets us list uploads without spending a channels.list call.
+/**
+ * A channel's uploads playlist ID is its channel ID with the "UC" prefix swapped
+ * for "UU", which lets us list uploads without spending a channels.list call.
+ */
 export function uploadsPlaylistId(channelId: string): string {
   return `UU${channelId.slice(2)}`;
 }
@@ -136,9 +140,11 @@ export interface VideoDetails {
   liveStatus: LiveStatus;
 }
 
-// Classify a video as live/upcoming/vod/normal. A finished broadcast (a stream
-// replay or aired premiere) reports liveBroadcastContent "none" but carries
-// liveStreamingDetails with an actualEndTime; a plain upload has neither.
+/**
+ * Classify a video as live/upcoming/vod/normal. A finished broadcast (a stream
+ * replay or aired premiere) reports liveBroadcastContent "none" but carries
+ * liveStreamingDetails with an actualEndTime; a plain upload has neither.
+ */
 function classifyLiveStatus(
   item: VideoListResponse["items"][number],
 ): LiveStatus {
@@ -151,8 +157,10 @@ function classifyLiveStatus(
   return item.liveStreamingDetails?.actualEndTime ? "vod" : "normal";
 }
 
-// Parse an ISO 8601 duration (e.g. "PT1H2M3S", "P1DT4M") to seconds. Live and
-// upcoming videos report "P0D" (no time part), which yields 0.
+/**
+ * Parse an ISO 8601 duration (e.g. "PT1H2M3S", "P1DT4M") to seconds. Live and
+ * upcoming videos report "P0D" (no time part), which yields 0.
+ */
 export function parseIsoDuration(iso: string): number {
   const match = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(
     iso,
@@ -166,9 +174,11 @@ export function parseIsoDuration(iso: string): number {
   return days * 86400 + hours * 3600 + minutes * 60 + seconds;
 }
 
-// playlistItems doesn't expose duration or broadcast kind, so fetch those from
-// videos.list separately (50 ids per call, flat 1 unit regardless of parts) and
-// key by video id.
+/**
+ * playlistItems doesn't expose duration or broadcast kind, so fetch those from
+ * videos.list separately (50 ids per call, flat 1 unit regardless of parts) and
+ * key by video id.
+ */
 export async function fetchVideoDetails(
   videoIds: string[],
   token: string,
@@ -299,10 +309,12 @@ interface PlaylistListResponse {
   nextPageToken?: string;
 }
 
-// A channel's public, self-made playlists. playlists.list has no order param and
-// only a creation timestamp, so we sort by that (newest first) ourselves — right
-// for episode-per-playlist channels, the intended use. One page (50) keeps it
-// quota-neutral with the uploads path; that's ~a year of weekly episodes.
+/**
+ * A channel's public, self-made playlists. playlists.list has no order param and
+ * only a creation timestamp, so we sort by that (newest first) ourselves — right
+ * for episode-per-playlist channels, the intended use. One page (50) keeps it
+ * quota-neutral with the uploads path; that's ~a year of weekly episodes.
+ */
 export async function fetchPlaylists(
   channelId: string,
   channelTitle: string,

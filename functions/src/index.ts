@@ -37,8 +37,10 @@ function clientSecret(): string {
   return value;
 }
 
-// The refresh token is stored under a server-only path (Firestore rules deny all
-// client access to users/{uid}/private/**); only the Admin SDK here can read it.
+/**
+ * The refresh token is stored under a server-only path (Firestore rules deny all
+ * client access to users/{uid}/private/**); only the Admin SDK here can read it.
+ */
 function refreshTokenDoc(uid: string) {
   return getFirestore().doc(`users/${uid}/private/youtube`);
 }
@@ -60,8 +62,10 @@ async function postToken(params: Record<string, string>): Promise<GoogleTokenRes
   return (await response.json()) as GoogleTokenResponse;
 }
 
-// Trade the one-time authorization code for tokens, persist the refresh token
-// server-side, and return only the short-lived access token to the browser.
+/**
+ * Trade the one-time authorization code for tokens, persist the refresh token
+ * server-side, and return only the short-lived access token to the browser.
+ */
 export const exchangeYouTubeCode = onCall<{ code?: string; redirectUri?: string }>(
   async (request): Promise<TokenResult> => {
     const uid = requireUid(request);
@@ -93,8 +97,10 @@ export const exchangeYouTubeCode = onCall<{ code?: string; redirectUri?: string 
   },
 );
 
-// Mint a fresh access token from the stored refresh token. This is what makes
-// reloads seamless — no popup, the durable credential never leaves the server.
+/**
+ * Mint a fresh access token from the stored refresh token. This is what makes
+ * reloads seamless — no popup, the durable credential never leaves the server.
+ */
 export const refreshYouTubeToken = onCall(async (request): Promise<TokenResult> => {
   const uid = requireUid(request);
   const snapshot = await refreshTokenDoc(uid).get();
@@ -138,19 +144,23 @@ const SHORTS_PROBE_RETRY_DELAY_MS = 300;
 // pathologically large batch.
 const SHORTS_MAX_PROBES = 1024;
 
-// Whether a video is a Short isn't user-specific, so cache it once globally as a
-// bare { isShort } doc. Server-only: no client allow rule in firestore.rules,
-// written only here.
+/**
+ * Whether a video is a Short isn't user-specific, so cache it once globally as a
+ * bare { isShort } doc. Server-only: no client allow rule in firestore.rules,
+ * written only here.
+ */
 function videoMetaDoc(videoId: string) {
   return getFirestore().doc(`videoMeta/${videoId}`);
 }
 
-// One probe: youtube.com/shorts/{id} serves 200 for a real Short and a 3xx
-// redirect for a normal video. Server-side because the browser can't read the
-// cross-origin status; `redirect: "manual"` so we see the redirect rather than
-// follow it, and we never read the body. Returns true (200) / false (3xx), or
-// null for anything else (4xx/5xx/network/timeout) — an inconclusive result we
-// don't trust.
+/**
+ * One probe: youtube.com/shorts/{id} serves 200 for a real Short and a 3xx
+ * redirect for a normal video. Server-side because the browser can't read the
+ * cross-origin status; `redirect: "manual"` so we see the redirect rather than
+ * follow it, and we never read the body. Returns true (200) / false (3xx), or
+ * null for anything else (4xx/5xx/network/timeout) — an inconclusive result we
+ * don't trust.
+ */
 async function probeOnce(videoId: string): Promise<boolean | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SHORTS_PROBE_TIMEOUT_MS);
@@ -182,8 +192,10 @@ async function probeOnce(videoId: string): Promise<boolean | null> {
   }
 }
 
-// Probe with a few attempts; returns null only if every attempt was
-// inconclusive, in which case the caller leaves it uncached to retry later.
+/**
+ * Probe with a few attempts; returns null only if every attempt was
+ * inconclusive, in which case the caller leaves it uncached to retry later.
+ */
 async function probeIsShort(videoId: string): Promise<boolean | null> {
   for (let attempt = 0; attempt <= SHORTS_PROBE_RETRIES; attempt++) {
     if (attempt > 0) {
@@ -199,10 +211,12 @@ async function probeIsShort(videoId: string): Promise<boolean | null> {
   return null;
 }
 
-// Classify the given video ids as Short or not, reading from the shared cache and
-// probing only the misses (then caching them). Returns a map of id -> isShort;
-// ids whose probe errors out are simply omitted (the client leaves them
-// unlabelled rather than guessing).
+/**
+ * Classify the given video ids as Short or not, reading from the shared cache and
+ * probing only the misses (then caching them). Returns a map of id -> isShort;
+ * ids whose probe errors out are simply omitted (the client leaves them
+ * unlabelled rather than guessing).
+ */
 export const classifyShorts = onCall<{ videoIds?: string[] }>(
   { timeoutSeconds: 300 },
   async (request): Promise<{ shorts: Record<string, boolean> }> => {
@@ -261,7 +275,9 @@ export const classifyShorts = onCall<{ videoIds?: string[] }>(
   },
 );
 
-// Revoke the grant with Google and forget the stored refresh token.
+/**
+ * Revoke the grant with Google and forget the stored refresh token.
+ */
 export const disconnectYouTube = onCall(async (request): Promise<{ ok: true }> => {
   const uid = requireUid(request);
   const snapshot = await refreshTokenDoc(uid).get();

@@ -55,10 +55,12 @@ function routeToUrl(route: Route): string {
   return query ? `${path}?${query}` : path;
 }
 
-// URL-as-state: `open` pushes a history entry (so it feels like a new page and
-// Back returns), `close` pops the open item while keeping the channel background.
-// A deep-linked route with nothing of ours behind it closes by stripping the
-// item rather than leaving the site.
+/**
+ * URL-as-state: `open` pushes a history entry (so it feels like a new page and
+ * Back returns), `close` pops the open item while keeping the channel background.
+ * A deep-linked route with nothing of ours behind it closes by stripping the
+ * item rather than leaving the site.
+ */
 export function useRoute(): {
   route: Route;
   open: (route: Route) => void;

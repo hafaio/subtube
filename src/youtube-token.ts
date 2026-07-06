@@ -35,9 +35,11 @@ function apply(result: TokenResult): string {
   return result.accessToken;
 }
 
-// Mint a fresh access token from the server-held refresh token. Rejects if the
-// user has never connected YouTube (or the refresh token was revoked), in which
-// case the caller should prompt an interactive connect.
+/**
+ * Mint a fresh access token from the server-held refresh token. Rejects if the
+ * user has never connected YouTube (or the refresh token was revoked), in which
+ * case the caller should prompt an interactive connect.
+ */
 export function silentRefresh(): Promise<string> {
   if (!refreshInFlight) {
     refreshInFlight = backendRefresh()
@@ -49,7 +51,9 @@ export function silentRefresh(): Promise<string> {
   return refreshInFlight;
 }
 
-// Run the interactive connect flow (popup); must be called from a user gesture.
+/**
+ * Run the interactive connect flow (popup); must be called from a user gesture.
+ */
 export async function connectYouTube(): Promise<void> {
   apply(await runConnectFlow());
 }

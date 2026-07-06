@@ -5,10 +5,12 @@ import { firebaseApp } from "./firebase-app";
 // this to avoid probing videos that are provably not Shorts.
 export const SHORTS_MAX_SECONDS = 180;
 
-// Ask the backend to classify the given video ids as Shorts (it probes
-// youtube.com/shorts/{id} server-side, since the browser can't read that
-// cross-origin status, and caches verdicts globally). Returns id -> isShort;
-// unknown ids are simply absent.
+/**
+ * Ask the backend to classify the given video ids as Shorts (it probes
+ * youtube.com/shorts/{id} server-side, since the browser can't read that
+ * cross-origin status, and caches verdicts globally). Returns id -> isShort;
+ * unknown ids are simply absent.
+ */
 export async function classifyShorts(
   videoIds: string[],
 ): Promise<Map<string, boolean>> {
