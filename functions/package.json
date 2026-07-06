@@ -14,7 +14,7 @@
   "dependencies": {
     "firebase-admin": "^13.0.0",
     "firebase-functions": "^6.4.0",
-    "p-map": "^7.0.3"
+    "p-map": "^7.0.5"
   },
   "devDependencies": {
     "typescript": "~5.9.2"
