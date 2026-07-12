@@ -17,6 +17,14 @@ Deploys to GitHub Pages via `.github/workflows/` (reusable `build` + manual
 `deploy`). Firebase **Functions** (Node 24, ESM, v2 callables) hold the YouTube
 OAuth refresh flow + Shorts probe.
 
+**Comments**: `/** */` documents a *declaration* — a function, component, class,
+type or interface, **each of their fields**, and module-level constants — so
+editors surface it on hover. `/* */` for a formal explanation belonging to no
+single declaration (a module preamble, a cluster of constants). `//` for short
+notes and anything inside a function body. A comment states a constraint the code
+can't — not what the next line does, not why a change was made, and never the
+reasoning that belongs in a commit message. Don't comment the obvious.
+
 - `bun dev` — dev server. NOTE: the dev port must be an **Authorized JavaScript
   origin** *and* **redirect URI** on the OAuth client, or the connect popup
   fails. 3000 is often taken → it falls back to 3001, so authorize whichever port
@@ -31,9 +39,13 @@ OAuth refresh flow + Shorts probe.
 
 - `src/config.ts` — `firebaseConfig` + `oauthClientId` (public web config; safe
   to commit — Firestore is gated by `firestore.rules`, not secrecy).
+- `src/firebase-app.ts` — the Firebase app, plus `firestoreDb()`: Firestore with
+  its **persistent (IndexedDB) cache**, so listeners paint before the server
+  answers and a local write shows up immediately.
 - `src/firebase.ts` — Firebase Auth (identity) + Firestore helpers. `channels/`,
-  `watched/` (owner-only); `loadWatchedFor` queries only the loaded ids
-  (`documentId() in`, 30/chunk) instead of the whole collection.
+  `watched/` (owner-only). `watchChannelFilters` is a live listener (filters sync
+  across devices); `loadWatchedFor` stays a one-shot query over only the loaded
+  ids (`documentId() in`, 30/chunk) instead of the whole collection.
 - `src/youtube-auth.ts` / `src/youtube-token.ts` — server-side OAuth: the connect
   popup runs the Authorization-Code flow, the code is exchanged in a callable,
   the refresh token is stored server-only, and the in-memory access token is
@@ -49,7 +61,9 @@ OAuth refresh flow + Shorts probe.
 - `src/router.ts` — query-string router: a `channel` background + an optional
   open `item` (video/playlist). `?channel=x&v=y` keeps the channel behind the
   player; Back closes.
-- `src/feed-cache.ts` — IndexedDB stale-while-revalidate feed cache.
+- `src/feed-cache.ts` — IndexedDB stale-while-revalidate cache for what Firestore
+  can't hold: the YouTube items + the subscribed channel ids (v2; filters moved to
+  Firestore's own cache).
 - `components/feed.tsx` — workhorse: load → `enrichItems` (watched + Shorts) →
   filter/sort grid; channel pages (scoped feed, on-demand fetch for disabled);
   mid-load 401 silent-refreshes once.

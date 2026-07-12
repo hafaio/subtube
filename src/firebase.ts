@@ -12,18 +12,16 @@ import {
   doc,
   documentId,
   getDocs,
-  getFirestore,
+  onSnapshot,
+  type QuerySnapshot,
   query,
   setDoc,
+  type Unsubscribe,
   where,
 } from "firebase/firestore";
-import { firebaseApp } from "./firebase-app";
+import { firebaseApp, firestoreDb } from "./firebase-app";
 import type { ChannelFilter, Subscription } from "./types";
 import { clearToken } from "./youtube-token";
-
-function db() {
-  return getFirestore(firebaseApp());
-}
 
 /**
  * Sign in for identity only. YouTube authorization is a separate Authorization
@@ -44,17 +42,14 @@ export function watchAuth(callback: (user: User | null) => void): () => void {
 }
 
 function channelsCollection(userId: string) {
-  return collection(db(), "users", userId, "channels");
+  return collection(firestoreDb(), "users", userId, "channels");
 }
 
 function watchedCollection(userId: string) {
-  return collection(db(), "users", userId, "watched");
+  return collection(firestoreDb(), "users", userId, "watched");
 }
 
-export async function loadChannelFilters(
-  userId: string,
-): Promise<Map<string, ChannelFilter>> {
-  const snapshot = await getDocs(channelsCollection(userId));
+function toFilterMap(snapshot: QuerySnapshot): Map<string, ChannelFilter> {
   const filters = new Map<string, ChannelFilter>();
   snapshot.forEach((document) => {
     filters.set(document.id, document.data() as ChannelFilter);
@@ -62,11 +57,56 @@ export async function loadChannelFilters(
   return filters;
 }
 
+/**
+ * Live view of the stored channel filters, including channels no longer
+ * subscribed to (the caller narrows to the current subscriptions). Firestore
+ * replays a local write to this listener as it's issued, so an edit never races a
+ * point-in-time read.
+ *
+ * `synced` distinguishes a snapshot the server has confirmed from one served out
+ * of the local cache, which may predate filters written on another device.
+ * Metadata changes are included so the confirmation arrives even when the server
+ * turns out to agree with the cache.
+ */
+export function watchChannelFilters(
+  userId: string,
+  onFilters: (filters: Map<string, ChannelFilter>, synced: boolean) => void,
+): Unsubscribe {
+  return onSnapshot(
+    channelsCollection(userId),
+    { includeMetadataChanges: true },
+    (snapshot) => {
+      onFilters(toFilterMap(snapshot), !snapshot.metadata.fromCache);
+    },
+  );
+}
+
+export async function loadChannelFilters(
+  userId: string,
+): Promise<Map<string, ChannelFilter>> {
+  return toFilterMap(await getDocs(channelsCollection(userId)));
+}
+
 export async function saveChannelFilter(
   userId: string,
   filter: ChannelFilter,
 ): Promise<void> {
   await setDoc(doc(channelsCollection(userId), filter.channelId), filter);
+}
+
+/**
+ * Refresh only the fields YouTube owns, leaving the ones the user owns alone. A
+ * whole-document write here would revert a filter edit made while the load that
+ * read this channel was still running.
+ */
+async function saveChannelIdentity(
+  userId: string,
+  channelId: string,
+  identity: Pick<ChannelFilter, "title" | "thumbnail">,
+): Promise<void> {
+  await setDoc(doc(channelsCollection(userId), channelId), identity, {
+    merge: true,
+  });
 }
 
 /**
@@ -96,7 +136,12 @@ export async function syncSubscriptions(
           thumbnail: subscription.thumbnail,
         };
         merged.set(subscription.channelId, updated);
-        writes.push(saveChannelFilter(userId, updated));
+        writes.push(
+          saveChannelIdentity(userId, subscription.channelId, {
+            title: subscription.title,
+            thumbnail: subscription.thumbnail,
+          }),
+        );
       } else {
         merged.set(subscription.channelId, prior);
       }
