@@ -133,6 +133,21 @@ describe("videoPassesFilter — video-only gates", () => {
       passes(video({ isShort: false }), channel({ shortsFilter: "shorts" })),
     ).toBe(false);
   });
+
+  test("an unclassified video passes the Shorts gate either way", () => {
+    expect(
+      passes(
+        video({ isShort: undefined }),
+        channel({ shortsFilter: "normal" }),
+      ),
+    ).toBe(true);
+    expect(
+      passes(
+        video({ isShort: undefined }),
+        channel({ shortsFilter: "shorts" }),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("videoPassesFilter — playlists", () => {

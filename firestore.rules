@@ -13,5 +13,18 @@ service cloud.firestore {
         allow read, write: if isOwner();
       }
     }
+
+    // Short-ness is public, immutable metadata shared by every user. A client may
+    // read it, and may create the null-verdict document that asks for one, but
+    // never write a verdict or touch an existing document — so it cannot poison
+    // the shared cache. The backend writes verdicts with the Admin SDK, which
+    // bypasses these rules.
+    match /videoMeta/{videoId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['requestedAt', 'isShort'])
+        && request.resource.data.requestedAt is number
+        && request.resource.data.isShort == null;
+    }
   }
 }

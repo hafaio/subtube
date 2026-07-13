@@ -30,7 +30,11 @@ import {
 import { formatDuration } from "../src/duration";
 import { feedItemId } from "../src/feed-item";
 import { compileFilter, videoPassesFilter } from "../src/filters";
-import { classifyShorts, SHORTS_MAX_SECONDS } from "../src/shorts";
+import {
+  isShortsCandidate,
+  requestShortsClassification,
+  watchShortsVerdicts,
+} from "../src/shorts";
 import type {
   ChannelFilter,
   ContentMode,
@@ -593,17 +597,15 @@ function RegexTester({
       ? feedItems
       : (fetched ?? []).filter((item) => item.kind === expectedKind);
 
-  // Classify any Shorts candidates still missing isShort. classifyShorts is
-  // cheap (one cached DB call for already-probed ids), so the Shorts preview
-  // stays accurate even for on-demand fetches.
+  // Fill in any Shorts candidate still missing isShort, so the preview reflects
+  // the Shorts gate even for an on-demand fetch.
   const pendingShortIds = list
     .filter(
       (item) =>
         item.kind === "video" &&
         item.isShort === undefined &&
         !shortsOverlay.has(item.videoId) &&
-        item.durationSeconds &&
-        item.durationSeconds <= SHORTS_MAX_SECONDS,
+        isShortsCandidate(item),
     )
     .map(feedItemId);
   const pendingShortKey = pendingShortIds.join(",");
@@ -611,17 +613,17 @@ function RegexTester({
     if (!pendingShortKey) {
       return;
     }
-    let cancelled = false;
-    void classifyShorts(pendingShortKey.split(","))
-      .then((result) => {
-        if (!cancelled && result.size > 0) {
-          setShortsOverlay((prev) => new Map([...prev, ...result]));
+    return watchShortsVerdicts(
+      pendingShortKey.split(","),
+      (verdicts, missing) => {
+        if (verdicts.size > 0) {
+          setShortsOverlay((prev) => new Map([...prev, ...verdicts]));
         }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+        if (missing.length > 0) {
+          void requestShortsClassification(missing);
+        }
+      },
+    );
   }, [pendingShortKey]);
   const shownList: FeedItem[] = list.map((item) =>
     item.kind === "video" &&

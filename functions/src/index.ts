@@ -1,5 +1,6 @@
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
+import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { type CallableRequest, HttpsError, onCall } from "firebase-functions/v2/https";
 import pMap from "p-map";
 
@@ -137,21 +138,34 @@ const SHORTS_PROBE_UA =
 const SHORTS_PROBE_TIMEOUT_MS = 5000;
 const SHORTS_PROBE_CONCURRENCY = 12;
 // Retries because an inconclusive answer (rate-limit, transient error) is worth
-// re-attempting; a slow first load is fine.
+// re-attempting; a slow first classification is fine.
 const SHORTS_PROBE_RETRIES = 2;
 const SHORTS_PROBE_RETRY_DELAY_MS = 300;
-// The client pre-filters to sub-3-min candidates, so this bounds only a
-// pathologically large batch.
-const SHORTS_MAX_PROBES = 1024;
+/**
+ * How long the drain waits for another unclassified video before deciding the
+ * queue is empty and going home.
+ */
+const DRAIN_IDLE_MS = 5000;
 
 /**
- * Whether a video is a Short isn't user-specific, so cache it once globally as a
- * bare { isShort } doc. Server-only: no client allow rule in firestore.rules,
- * written only here.
+ * How long to wait for the very first snapshot, which has a cold start and the
+ * listener handshake in front of it. Going home on the ordinary idle gap would
+ * strand the document that fired the trigger, and nothing would re-deliver it.
  */
-function videoMetaDoc(videoId: string) {
-  return getFirestore().doc(`videoMeta/${videoId}`);
-}
+const DRAIN_FIRST_SNAPSHOT_MS = 30 * 1000;
+
+/**
+ * Stop taking new work with time to spare inside the function's timeout. Anything
+ * left stays queued, and the next request's event drains it.
+ */
+const DRAIN_BUDGET_MS = 8 * 60 * 1000;
+
+/**
+ * How many times a drain re-probes a video whose write failed. The listener only
+ * re-delivers a document that changed, and a failed write changes nothing, so a
+ * failure has to be re-queued here or the document is stranded.
+ */
+const DRAIN_MAX_ATTEMPTS = 2;
 
 /**
  * One probe: youtube.com/shorts/{id} serves 200 for a real Short and a 3xx
@@ -211,67 +225,128 @@ async function probeIsShort(videoId: string): Promise<boolean | null> {
   return null;
 }
 
+/** Every video asked about but not yet classified — the work queue. */
+function unclassifiedVideos() {
+  return getFirestore().collection("videoMeta").where("isShort", "==", null);
+}
+
 /**
- * Classify the given video ids as Short or not, reading from the shared cache and
- * probing only the misses (then caching them). Returns a map of id -> isShort;
- * ids whose probe errors out are simply omitted (the client leaves them
- * unlabelled rather than guessing).
+ * Probe one video and record what came back, reporting whether the document was
+ * settled. An inconclusive probe deletes it rather than cache a guess: nothing is
+ * known about the video, and the next client to want it will ask again. A failed
+ * write settles nothing and leaves it queued.
  */
-export const classifyShorts = onCall<{ videoIds?: string[] }>(
-  { timeoutSeconds: 300 },
-  async (request): Promise<{ shorts: Record<string, boolean> }> => {
-    requireUid(request);
-    const ids = [...new Set(request.data.videoIds ?? [])].filter(
-      (id): id is string => typeof id === "string" && id.length > 0,
-    );
-    if (ids.length === 0) {
-      return { shorts: {} };
+async function classifyOne(videoId: string): Promise<boolean> {
+  const document = getFirestore().doc(`videoMeta/${videoId}`);
+  try {
+    const isShort = await probeIsShort(videoId);
+    if (isShort === null) {
+      await document.delete();
+    } else {
+      await document.set({ isShort, classifiedAt: Date.now() });
     }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-    const shorts = new Map<string, boolean>();
-    const cached = await getFirestore().getAll(...ids.map(videoMetaDoc));
-    const misses: string[] = [];
-    cached.forEach((snapshot, index) => {
-      const isShort = snapshot.get("isShort") as boolean | undefined;
-      if (typeof isShort === "boolean") {
-        shorts.set(ids[index], isShort);
-      } else {
-        misses.push(ids[index]);
+/**
+ * Work the queue of unclassified videos until it has been quiet for DRAIN_IDLE_MS,
+ * then resolve with how many were classified. Listener-driven, so a video
+ * requested while this runs joins the same drain.
+ */
+function drainUnclassified(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const queue: string[] = [];
+    const attempts = new Map<string, number>();
+    const deadline = Date.now() + DRAIN_BUDGET_MS;
+    let classified = 0;
+    let working = false;
+    let idleTimer: NodeJS.Timeout | undefined;
+    let unsubscribe: (() => void) | undefined;
+
+    const finish = () => {
+      clearTimeout(idleTimer);
+      unsubscribe?.();
+      resolve(classified);
+    };
+    // a straggler request may still be in flight, so an empty queue only ends the
+    // drain once it stays empty
+    const goHomeWhenQuiet = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(finish, DRAIN_IDLE_MS);
+    };
+
+    const work = async () => {
+      if (working) {
+        return;
       }
-    });
-
-    const toProbe = misses.slice(0, SHORTS_MAX_PROBES);
-    await pMap(
-      toProbe,
-      async (id) => {
-        try {
-          const isShort = await probeIsShort(id);
-          // null = inconclusive after retries: leave it uncached so a later load
-          // re-probes it.
-          if (isShort === null) {
-            return;
-          }
-          shorts.set(id, isShort);
-          await videoMetaDoc(id).set({ isShort });
-        } catch {
-          // Firestore write failed: leave it unknown, don't block the batch.
+      working = true;
+      clearTimeout(idleTimer);
+      try {
+        while (queue.length > 0 && Date.now() < deadline) {
+          const batch = queue.splice(0, SHORTS_PROBE_CONCURRENCY);
+          const settled = await pMap(batch, classifyOne, {
+            concurrency: SHORTS_PROBE_CONCURRENCY,
+          });
+          batch.forEach((videoId, index) => {
+            const tries = attempts.get(videoId) ?? 1;
+            if (settled[index]) {
+              classified++;
+            } else if (tries < DRAIN_MAX_ATTEMPTS) {
+              attempts.set(videoId, tries + 1);
+              queue.push(videoId);
+            }
+          });
         }
-      },
-      { concurrency: SHORTS_PROBE_CONCURRENCY },
-    );
-
-    let found = 0;
-    for (const isShort of shorts.values()) {
-      if (isShort) {
-        found++;
+      } finally {
+        working = false;
+        if (Date.now() >= deadline) {
+          finish();
+        } else {
+          goHomeWhenQuiet();
+        }
       }
+    };
+
+    unsubscribe = unclassifiedVideos().onSnapshot((snapshot) => {
+      for (const document of snapshot.docs) {
+        // a document keeps matching the query until its verdict is written, so it
+        // re-arrives in snapshots while being probed
+        if (!attempts.has(document.id)) {
+          attempts.set(document.id, 1);
+          queue.push(document.id);
+        }
+      }
+      void work();
+    }, reject);
+    idleTimer = setTimeout(finish, DRAIN_FIRST_SNAPSHOT_MS);
+  });
+}
+
+/**
+ * Fill in Shorts verdicts. A client asks about a video by creating
+ * videoMeta/{id} with a null verdict, which fires this — and it then drains every
+ * unclassified video, not only the one that woke it.
+ *
+ * `maxInstances: 1` serializes the events, so the first drains the queue and the
+ * rest find it empty: no two instances probe the same video, so no lock is needed.
+ * A drain starts from the whole query rather than the document that woke it, so
+ * one stranded by a dropped event is swept up by the next, and no retry policy is
+ * needed either.
+ */
+export const classifyShort = onDocumentCreated(
+  {
+    document: "videoMeta/{videoId}",
+    maxInstances: 1,
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const classified = await drainUnclassified();
+    if (classified > 0) {
+      console.log(`classifyShort: classified ${classified} video(s)`);
     }
-    console.log(
-      `classifyShorts: ${ids.length} requested, ${ids.length - misses.length} cached, ` +
-        `probed ${toProbe.length}, ${found} shorts`,
-    );
-    // serialize the Map to a plain object for the callable's JSON response.
-    return { shorts: Object.fromEntries(shorts) };
   },
 );
 
