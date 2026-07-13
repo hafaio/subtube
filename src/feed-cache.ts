@@ -1,3 +1,4 @@
+import { withVerdicts } from "./feed-item";
 import type { FeedItem } from "./types";
 
 /*
@@ -68,5 +69,42 @@ export async function saveCachedFeed(
     });
   } catch {
     // Best-effort cache; a failure here just means no instant paint next time.
+  }
+}
+
+/**
+ * Fold Shorts verdicts into the cached feed as they arrive. They land after the
+ * load that saved it, so a cache that never learned them paints those videos as
+ * unclassified — and an unclassified video is always shown, so the next reload
+ * would flash a dropped Short into the feed and back out again once the verdict
+ * re-arrived. Short-ness never changes, so a stored verdict never goes stale.
+ */
+export async function cacheShortsVerdicts(
+  uid: string,
+  verdicts: Map<string, boolean>,
+): Promise<void> {
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      // One transaction for the read and the write, so a whole-feed save can't
+      // land between them and be overwritten by what it replaced.
+      const transaction = db.transaction(STORE, "readwrite");
+      const store = transaction.objectStore(STORE);
+      const request = store.get(uid);
+      request.onsuccess = () => {
+        const cached = request.result as CachedFeed | undefined;
+        if (!cached) {
+          return;
+        }
+        const items = withVerdicts(cached.items, verdicts);
+        if (items !== cached.items) {
+          store.put({ ...cached, items }, uid);
+        }
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+  } catch {
+    // Best-effort; the next full save carries these verdicts anyway.
   }
 }
