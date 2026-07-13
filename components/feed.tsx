@@ -30,6 +30,7 @@ import {
   signOutUser,
   syncSubscriptions,
   unmarkWatched,
+  watchChannelFilters,
 } from "../src/firebase";
 import { buildPlayQueue, type PlayQueue } from "../src/queue";
 import { useRoute } from "../src/router";
@@ -121,10 +122,14 @@ async function enrichItems(
 }
 
 interface FeedData {
-  channels: Map<string, ChannelFilter>;
+  /** The channels currently subscribed to; their filters come from the listener. */
+  subscriptions: string[];
   watched: Set<string>;
   items: FeedItem[];
-  // at least one channel's fetch failed non-fatally (e.g. quota 403); result is partial, don't cache it
+  /**
+   * Whether a channel's fetch failed non-fatally (e.g. a quota 403), making the
+   * result partial — it must not overwrite the cache.
+   */
   partial: boolean;
 }
 
@@ -145,7 +150,15 @@ export default function Feed({
   onDisconnect: () => Promise<void>;
   onTokenLost: () => void;
 }): ReactElement {
-  const [channels, setChannels] = useState<Map<string, ChannelFilter>>(
+  // every stored filter, including channels no longer subscribed to (their
+  // documents outlive the subscription), narrowed to `subscriptions` below
+  const [channelFilters, setChannelFilters] = useState<
+    Map<string, ChannelFilter>
+  >(new Map());
+  const [subscriptions, setSubscriptions] = useState<string[]>([]);
+  // edits whose debounced write hasn't been issued yet; once it is, Firestore
+  // replays it to the listener and the entry is dropped
+  const [filterEdits, setFilterEdits] = useState<Map<string, ChannelFilter>>(
     new Map(),
   );
   const [watched, setWatched] = useState<Set<string>>(new Set());
@@ -178,11 +191,44 @@ export default function Feed({
   const [channelLoading, setChannelLoading] = useState(false);
   const [channelError, setChannelError] = useState<string | null>(null);
 
+  // the listener's filters, for a load to diff against without re-reading them
+  const syncedFilters = useRef<Map<string, ChannelFilter> | null>(null);
+
+  useEffect(
+    () =>
+      watchChannelFilters(user.uid, (filters, synced) => {
+        setChannelFilters(filters);
+        if (synced) {
+          syncedFilters.current = filters;
+        }
+      }),
+    [user.uid],
+  );
+
+  // the subscribed channels, each with its stored filter or the edit still on its
+  // way to Firestore
+  const channels = useMemo(() => {
+    const merged = new Map<string, ChannelFilter>();
+    for (const channelId of subscriptions) {
+      const filter =
+        filterEdits.get(channelId) ?? channelFilters.get(channelId);
+      if (filter) {
+        merged.set(channelId, filter);
+      }
+    }
+    return merged;
+  }, [subscriptions, channelFilters, filterEdits]);
+
   const fetchEverything = useCallback(
     async (token: string): Promise<FeedData> => {
-      const subscriptions = await fetchSubscriptions(token);
-      const existing = await loadChannelFilters(user.uid);
-      const merged = await syncSubscriptions(user.uid, subscriptions, existing);
+      const subscribed = await fetchSubscriptions(token);
+      // The listener's filters, once the server has confirmed them, are the same
+      // documents a read would return. Before that they may be a stale cache, and
+      // syncSubscriptions would mistake a missing filter for a new channel and
+      // overwrite it with defaults — so that case still pays for the read.
+      const existing =
+        syncedFilters.current ?? (await loadChannelFilters(user.uid));
+      const merged = await syncSubscriptions(user.uid, subscribed, existing);
 
       const enabled = Array.from(merged.values()).filter(
         (channel) => channel.enabled,
@@ -215,7 +261,7 @@ export default function Feed({
       );
       const enriched = await enrichItems(user.uid, loaded.flat());
       return {
-        channels: merged,
+        subscriptions: Array.from(merged.keys()),
         watched: enriched.watched,
         items: enriched.items,
         partial: failed > 0,
@@ -247,8 +293,7 @@ export default function Feed({
         // The token died mid-load; mint a fresh one silently and retry once.
         data = await fetchEverything(await silentRefresh());
       }
-      // edits and toggles are disabled while loading, so nothing's in-flight to reconcile — replace outright
-      setChannels(data.channels);
+      setSubscriptions(data.subscriptions);
       setWatched(data.watched);
       setHiddenWatched(data.watched);
       setItems(data.items);
@@ -258,7 +303,7 @@ export default function Feed({
       } else {
         setNotice(null);
         void saveCachedFeed(user.uid, {
-          channels: data.channels,
+          subscriptions: data.subscriptions,
           watched: data.watched,
           items: data.items,
           cachedAt: Date.now(),
@@ -360,7 +405,7 @@ export default function Feed({
   const persistTimers = useRef<Map<string, number>>(new Map());
   const updateFilter = useCallback(
     (filter: ChannelFilter) => {
-      setChannels((prev) => new Map(prev).set(filter.channelId, filter));
+      setFilterEdits((prev) => new Map(prev).set(filter.channelId, filter));
       const timers = persistTimers.current;
       const pending = timers.get(filter.channelId);
       if (pending) {
@@ -369,7 +414,17 @@ export default function Feed({
       timers.set(
         filter.channelId,
         window.setTimeout(() => {
-          void saveChannelFilter(user.uid, filter);
+          void saveChannelFilter(user.uid, filter).finally(() => {
+            // the listener carries this value now, unless a newer edit is waiting
+            setFilterEdits((prev) => {
+              if (prev.get(filter.channelId) !== filter) {
+                return prev;
+              }
+              const next = new Map(prev);
+              next.delete(filter.channelId);
+              return next;
+            });
+          });
           timers.delete(filter.channelId);
         }, 600),
       );

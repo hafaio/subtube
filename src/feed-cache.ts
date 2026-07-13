@@ -1,14 +1,23 @@
-import type { ChannelFilter, FeedItem } from "./types";
+import type { FeedItem } from "./types";
 
-// A tiny IndexedDB key/value store (one record per user) for the last feed, so a
-// reload can paint instantly while fresh data loads in the background. IndexedDB
-// (not localStorage) because the feed — channels + videos — can exceed the ~5MB
-// string cap, and structured clone stores Maps/Sets/objects directly.
+/*
+ * A tiny IndexedDB key/value store (one record per user) holding the last feed, so
+ * a reload paints instantly while fresh data loads behind it. IndexedDB rather
+ * than localStorage because the videos can exceed the ~5MB string cap, and
+ * structured clone stores Maps/Sets directly. Only what Firestore doesn't hold
+ * goes here — its own persistent cache covers the channel filters.
+ */
 const DB_NAME = "subtube";
 const STORE = "feed";
+/**
+ * v2 dropped the stored filters; the upgrade discards v1 records rather than
+ * migrating them, costing one blank load.
+ */
+const DB_VERSION = 2;
 
 export interface CachedFeed {
-  channels: Map<string, ChannelFilter>;
+  /** The channels subscribed to, in feed order; their filters live in Firestore. */
+  subscriptions: string[];
   watched: Set<string>;
   items: FeedItem[];
   cachedAt: number;
@@ -16,9 +25,13 @@ export interface CachedFeed {
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
-      request.result.createObjectStore(STORE);
+      const database = request.result;
+      if (database.objectStoreNames.contains(STORE)) {
+        database.deleteObjectStore(STORE);
+      }
+      database.createObjectStore(STORE);
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
