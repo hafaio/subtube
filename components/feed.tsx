@@ -34,13 +34,16 @@ import {
 } from "../src/firebase";
 import { buildPlayQueue, type PlayQueue } from "../src/queue";
 import { useRoute } from "../src/router";
-import { classifyShorts, SHORTS_MAX_SECONDS } from "../src/shorts";
+import {
+  isShortsCandidate,
+  requestShortsClassification,
+  watchShortsVerdicts,
+} from "../src/shorts";
 import type {
   ChannelFilter,
   ContentMode,
   FeedItem,
   Playlist,
-  Video,
 } from "../src/types";
 import {
   fetchPlaylists,
@@ -135,44 +138,46 @@ async function mapWithConcurrency<Item, Result>(
 }
 
 /**
- * Attach Shorts verdicts and watched-state to freshly fetched items. Shared by
- * the full feed load and the on-demand single-channel load. A video's Short-ness
- * never changes, so verdicts are reused from the last cached feed and only new
- * candidates (sub-3-min videos) are classified.
+ * Attach watched-state and any known Shorts verdict to freshly fetched items.
+ * Shared by the full feed load and the on-demand single-channel load. A candidate
+ * with no verdict is left undefined rather than guessed at; the listener below
+ * fills it in when one arrives.
  */
 async function enrichItems(
   uid: string,
   items: FeedItem[],
+  known: Map<string, boolean>,
 ): Promise<{ items: FeedItem[]; watched: Set<string> }> {
-  const ids = items.map(feedItemId);
-  const known = new Map<string, boolean>();
-  const cached = await loadCachedFeed(uid);
-  for (const item of cached?.items ?? []) {
-    if (item.kind === "video" && typeof item.isShort === "boolean") {
-      known.set(item.videoId, item.isShort);
-    }
-  }
-  const isCandidate = (item: FeedItem): item is Video =>
-    item.kind === "video" &&
-    !!item.durationSeconds &&
-    item.durationSeconds <= SHORTS_MAX_SECONDS;
-  const toClassify = items
-    .filter((item) => isCandidate(item) && !known.has(item.videoId))
-    .map(feedItemId);
-  const [watched, classified] = await Promise.all([
-    loadWatchedFor(uid, ids),
-    classifyShorts(toClassify).catch(() => new Map<string, boolean>()),
-  ]);
+  const watched = await loadWatchedFor(uid, items.map(feedItemId));
   const withShorts: FeedItem[] = items.map((item) => {
     if (item.kind !== "video") {
       return item;
     }
-    const isShort = isCandidate(item)
-      ? (known.get(item.videoId) ?? classified.get(item.videoId))
-      : false;
+    // a video too long to be a Short needs no verdict at all
+    const isShort = isShortsCandidate(item) ? known.get(item.videoId) : false;
     return { ...item, isShort };
   });
   return { items: withShorts, watched };
+}
+
+/** Apply arriving Shorts verdicts to a list, reusing it if nothing changed. */
+function withVerdicts(
+  items: FeedItem[],
+  verdicts: Map<string, boolean>,
+): FeedItem[] {
+  let changed = false;
+  const patched = items.map((item) => {
+    if (item.kind !== "video") {
+      return item;
+    }
+    const isShort = verdicts.get(item.videoId);
+    if (isShort === undefined || isShort === item.isShort) {
+      return item;
+    }
+    changed = true;
+    return { ...item, isShort };
+  });
+  return changed ? patched : items;
 }
 
 interface FeedData {
@@ -254,6 +259,8 @@ export default function Feed({
   const lastAttemptAt = useRef(0);
   // whether a load has landed, so a slow cache read can't overwrite one that beat it
   const feedApplied = useRef(false);
+  // Short-ness never changes, so verdicts carry across loads
+  const shortsVerdicts = useRef<Map<string, boolean>>(new Map());
   const pendingWatched = useRef<Map<string, PendingWrite<boolean>>>(new Map());
   // the listener's filters, for a load to diff against without re-reading them
   const syncedFilters = useRef<Map<string, ChannelFilter> | null>(null);
@@ -282,6 +289,54 @@ export default function Feed({
     }
     return merged;
   }, [subscriptions, channelFilters, filterEdits]);
+
+  const rememberVerdicts = useCallback((enriched: FeedItem[]) => {
+    for (const item of enriched) {
+      if (item.kind === "video" && typeof item.isShort === "boolean") {
+        shortsVerdicts.current.set(item.videoId, item.isShort);
+      }
+    }
+  }, []);
+
+  /*
+   * Every video on screen that could be a Short. Includes the already-classified
+   * ones on purpose — a set that shrank as verdicts landed would tear down and
+   * rebuild the listeners on every arrival.
+   */
+  const shortsCandidates = useMemo(() => {
+    const ids = new Set<string>();
+    for (const item of [...items, ...(channelItems?.items ?? [])]) {
+      if (item.kind === "video" && isShortsCandidate(item)) {
+        ids.add(item.videoId);
+      }
+    }
+    return Array.from(ids).sort().join(",");
+  }, [items, channelItems]);
+
+  // Watch the candidates whose verdict we don't know; creating a document is how
+  // an unknown one is asked about. Verdicts patch the cards as they arrive.
+  useEffect(() => {
+    const candidates = shortsCandidates
+      .split(",")
+      .filter((videoId) => videoId && !shortsVerdicts.current.has(videoId));
+    if (candidates.length === 0) {
+      return;
+    }
+    return watchShortsVerdicts(candidates, (verdicts, missing) => {
+      if (verdicts.size > 0) {
+        for (const [videoId, isShort] of verdicts) {
+          shortsVerdicts.current.set(videoId, isShort);
+        }
+        setItems((prev) => withVerdicts(prev, verdicts));
+        setChannelItems((prev) =>
+          prev ? { ...prev, items: withVerdicts(prev.items, verdicts) } : prev,
+        );
+      }
+      if (missing.length > 0) {
+        void requestShortsClassification(missing);
+      }
+    });
+  }, [shortsCandidates]);
 
   const fetchEverything = useCallback(
     async (token: string): Promise<FeedData> => {
@@ -323,7 +378,12 @@ export default function Feed({
           }
         },
       );
-      const enriched = await enrichItems(user.uid, loaded.flat());
+      const enriched = await enrichItems(
+        user.uid,
+        loaded.flat(),
+        shortsVerdicts.current,
+      );
+      rememberVerdicts(enriched.items);
       return {
         subscriptions: Array.from(merged.keys()),
         watched: enriched.watched,
@@ -331,7 +391,7 @@ export default function Feed({
         partial: failed > 0,
       };
     },
-    [user.uid],
+    [user.uid, rememberVerdicts],
   );
 
   const loadFeed = useCallback(async () => {
@@ -430,13 +490,14 @@ export default function Feed({
         setWatched(cached.watched);
         setHiddenWatched(cached.watched);
         setItems(cached.items);
+        rememberVerdicts(cached.items);
       }
       setHydrating(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [user.uid]);
+  }, [user.uid, rememberVerdicts]);
 
   useEffect(() => {
     if (ready) {
@@ -496,7 +557,12 @@ export default function Feed({
                 token,
                 UPLOADS_PER_CHANNEL,
               );
-        const enriched = await enrichItems(user.uid, fetched);
+        const enriched = await enrichItems(
+          user.uid,
+          fetched,
+          shortsVerdicts.current,
+        );
+        rememberVerdicts(enriched.items);
         if (cancelled) {
           return;
         }
@@ -534,6 +600,7 @@ export default function Feed({
     channelTitle,
     channelItems,
     user.uid,
+    rememberVerdicts,
   ]);
 
   const persistTimers = useRef<Map<string, number>>(new Map());

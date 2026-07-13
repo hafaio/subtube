@@ -48,12 +48,17 @@ export function videoPassesFilter(
   // The broadcast/Shorts/duration gates are video-only; playlists skip them.
   // (Treat a missing kind — e.g. an older cached video — as a video.)
   if (item.kind !== "playlist") {
-    // Shorts gate: keep only Shorts, only non-Shorts, or everything.
-    if (shortsFilter === "normal" && item.isShort) {
-      return false;
-    }
-    if (shortsFilter === "shorts" && item.isShort !== true) {
-      return false;
+    // Shorts gate: keep only Shorts, only non-Shorts, or everything. A video with
+    // no verdict (not classified yet, or the probe gave up) passes either way —
+    // the gate can only act on what's known, and a video nobody can classify must
+    // not vanish from the feed.
+    if (item.isShort !== undefined) {
+      if (shortsFilter === "normal" && item.isShort) {
+        return false;
+      }
+      if (shortsFilter === "shorts" && !item.isShort) {
+        return false;
+      }
     }
     // Broadcast gate. Upcoming videos are always hidden; otherwise keep only the
     // kinds the channel's live filter allows.

@@ -51,8 +51,23 @@ reasoning that belongs in a commit message. Don't comment the obvious.
   the refresh token is stored server-only, and the in-memory access token is
   silently re-minted via the backend (GIS can't re-mint client-side anymore).
 - `functions/src/index.ts` — `exchangeYouTubeCode` / `refreshYouTubeToken` /
-  `disconnectYouTube`, plus `classifyShorts` (probes `youtube.com/shorts/{id}`
-  server-side, caches verdicts in global server-only `videoMeta/{id}`).
+  `disconnectYouTube`, plus `classifyShort`: a Firestore **trigger** on
+  `videoMeta/{id}` that **drains the whole queue**, not just the doc that woke it
+  — it listens for `isShort == null` and probes 12 at a time until the queue has
+  been quiet for `DRAIN_IDLE_MS`. `maxInstances: 1` serializes everything: a load
+  creating 300 docs still fires 300 events (a doc trigger fires per doc, no way
+  around it), but the first drains all of them and the other 299 find an empty
+  queue and cost milliseconds. No lock, no leader election. It self-heals too — a
+  doc stranded by a dropped event is swept up by the next drain. An inconclusive
+  probe **deletes** the doc rather than cache a guess.
+- `src/shorts.ts` — the client half: `watchShortsVerdicts` listens to the
+  `videoMeta` docs it needs (one already classified by anyone costs a read and
+  never reaches the backend), and `requestShortsClassification` *creates the doc*
+  with `isShort: null`, which both fires the trigger and puts the video in the
+  queue it drains (Firestore can't query for an absent field). Rules let a client
+  ask, never answer. Requests are deduped per session. A **cache-served** snapshot
+  reports no missing ids: the first snapshot of a listener precedes the server's
+  answer, and trusting it would ask about videos already classified.
 - `src/youtube.ts` — Data API: subscriptions, uploads (`UC`→`UU` playlist),
   playlists, and per-video duration + live status (`videos.list`).
 - `src/types.ts` — `FeedItem = Video | Playlist` (discriminated by `kind`).
@@ -64,9 +79,13 @@ reasoning that belongs in a commit message. Don't comment the obvious.
 - `src/feed-cache.ts` — IndexedDB stale-while-revalidate cache for what Firestore
   can't hold: the YouTube items + the subscribed channel ids (v2; filters moved to
   Firestore's own cache).
-- `components/feed.tsx` — workhorse: load → `enrichItems` (watched + Shorts) →
-  filter/sort grid; channel pages (scoped feed, on-demand fetch for disabled);
-  mid-load 401 silent-refreshes once.
+- `components/feed.tsx` — workhorse: hydrate from the cache, then load →
+  `enrichItems` (watched + known Shorts verdicts) → filter/sort grid; channel
+  pages (scoped feed, on-demand fetch for disabled); mid-load 401 silent-refreshes
+  once. Every load is a background refresh over what's on screen (the UI stays
+  live); returning to the app refreshes a feed older than `REFRESH_STALE_MS`. A
+  watched toggle made mid-load is re-applied over the load's result (that read is
+  a point-in-time snapshot); filters need no such thing, being listener-driven.
 - `components/{video-card,playlist-card,channel-filters,player,login,...}.tsx` —
   UI. `next/image` with `images.unoptimized`; thumbnails guarded against empty
   src.
@@ -77,8 +96,22 @@ reasoning that belongs in a commit message. Don't comment the obvious.
   rule) instead of GIS silent re-mint, which Google removed. Browser holds only
   short-lived access tokens.
 - **Watched is self-tracked** in Firestore (YouTube removed the history API).
-- **Shorts via `/shorts/{id}` probe** (no API flag), server-side (CORS), cached
-  globally; client reuses cached verdicts so steady state does no work.
+- **Shorts are database-driven, end to end.** The client only ever reads and
+  writes Firestore: it listens to the `videoMeta` docs for the videos on screen,
+  and *creating* a doc is how it asks for a missing one. The trigger fills it in;
+  the listener delivers it. No callable, no request collection, no crawler, no
+  scheduled sweeper — work exists only because a user loaded a video nobody had
+  classified. **Probes are batched** by draining the queue in one invocation:
+  billing is by the second and a probe is a second of waiting on YouTube, so 12
+  concurrent probes share one billed second instead of each buying its own (~5×
+  cheaper than a probe per invocation; both are pennies, but the drain is also
+  what makes it self-healing).
+- **An unclassified video is always visible**: the Shorts gate acts only on a
+  verdict it has, so a video passes either way until one lands (it may then blink
+  out of a channel that drops Shorts). A gate that held candidates back instead
+  would hide a video *forever* whenever a verdict never came — and a queue only
+  drains when some client asks about something new, so "never" is reachable.
+  Showing a Short by mistake for a second beats losing a video permanently.
 - **Playlists/channel pages reuse the feed pipeline**; the broadcast/Shorts gates
   no-op on playlists.
 - **Keep the official IFrame player** so ads serve and views count (intentional,
