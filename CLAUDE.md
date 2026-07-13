@@ -78,7 +78,11 @@ reasoning that belongs in a commit message. Don't comment the obvious.
   player; Back closes.
 - `src/feed-cache.ts` — IndexedDB stale-while-revalidate cache for what Firestore
   can't hold: the YouTube items + the subscribed channel ids (v2; filters moved to
-  Firestore's own cache).
+  Firestore's own cache). Shorts verdicts are folded into it as they arrive
+  (`cacheShortsVerdicts`), since they land *after* the load that wrote the cache —
+  a cache that never learned them replays those videos as unclassified, and an
+  unclassified video is shown, so a dropped Short would flash in and out on every
+  reload.
 - `components/feed.tsx` — workhorse: hydrate from the cache, then load →
   `enrichItems` (watched + known Shorts verdicts) → filter/sort grid; channel
   pages (scoped feed, on-demand fetch for disabled); mid-load 401 silent-refreshes
@@ -88,7 +92,10 @@ reasoning that belongs in a commit message. Don't comment the obvious.
   a point-in-time snapshot); filters need no such thing, being listener-driven —
   but a load only diffs subscriptions against filters the **server** has confirmed,
   never a cache snapshot, which could mistake a filter for a new channel and reset
-  it.
+  it. The grid stays empty until the filter listener's first snapshot (cache-served,
+  so ~instant): with no filters there is nothing to filter *with*, and a channel
+  page — which has no `enabled` check to hide behind — would paint the whole cached
+  feed unfiltered.
 - `components/{video-card,playlist-card,channel-filters,player,login,...}.tsx` —
   UI. `next/image` with `images.unoptimized`; thumbnails guarded against empty
   src.

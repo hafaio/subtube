@@ -19,8 +19,12 @@ import {
   MdVisibility,
   MdVisibilityOff,
 } from "react-icons/md";
-import { loadCachedFeed, saveCachedFeed } from "../src/feed-cache";
-import { feedItemId } from "../src/feed-item";
+import {
+  cacheShortsVerdicts,
+  loadCachedFeed,
+  saveCachedFeed,
+} from "../src/feed-cache";
+import { feedItemId, withVerdicts } from "../src/feed-item";
 import { compileFilter, videoPassesFilter } from "../src/filters";
 import {
   loadChannelFilters,
@@ -160,26 +164,6 @@ async function enrichItems(
   return { items: withShorts, watched };
 }
 
-/** Apply arriving Shorts verdicts to a list, reusing it if nothing changed. */
-function withVerdicts(
-  items: FeedItem[],
-  verdicts: Map<string, boolean>,
-): FeedItem[] {
-  let changed = false;
-  const patched = items.map((item) => {
-    if (item.kind !== "video") {
-      return item;
-    }
-    const isShort = verdicts.get(item.videoId);
-    if (isShort === undefined || isShort === item.isShort) {
-      return item;
-    }
-    changed = true;
-    return { ...item, isShort };
-  });
-  return changed ? patched : items;
-}
-
 interface FeedData {
   /** The channels currently subscribed to; their filters come from the listener. */
   subscriptions: string[];
@@ -214,6 +198,9 @@ export default function Feed({
   const [channelFilters, setChannelFilters] = useState<
     Map<string, ChannelFilter>
   >(new Map());
+  // whether the filter listener has delivered a snapshot, cached or not; until it
+  // has there is nothing to filter with, and the cached feed would paint unfiltered
+  const [filtersLoaded, setFiltersLoaded] = useState(false);
   const [subscriptions, setSubscriptions] = useState<string[]>([]);
   // edits whose debounced write hasn't been issued yet; once it is, Firestore
   // replays it to the listener and the entry is dropped
@@ -269,6 +256,7 @@ export default function Feed({
     () =>
       watchChannelFilters(user.uid, (filters, synced) => {
         setChannelFilters(filters);
+        setFiltersLoaded(true);
         if (synced) {
           syncedFilters.current = filters;
         }
@@ -336,12 +324,13 @@ export default function Feed({
         setChannelItems((prev) =>
           prev ? { ...prev, items: withVerdicts(prev.items, verdicts) } : prev,
         );
+        void cacheShortsVerdicts(user.uid, verdicts);
       }
       if (missing.length > 0) {
         void requestShortsClassification(missing);
       }
     });
-  }, [shortsCandidates]);
+  }, [shortsCandidates, user.uid]);
 
   const fetchEverything = useCallback(
     async (token: string): Promise<FeedData> => {
@@ -678,6 +667,12 @@ export default function Feed({
   );
 
   const feed = useMemo(() => {
+    // Painting before the filters arrive would show every cached item, filtered by
+    // nothing, for as long as Firestore's cache takes to answer — a channel page
+    // has no `enabled` check to hide them behind.
+    if (!filtersLoaded) {
+      return [];
+    }
     const compiled = new Map(
       Array.from(channels.values()).map((channel) => [
         channel.channelId,
@@ -717,6 +712,7 @@ export default function Feed({
     onDemandChannel,
     channelMode,
     channels,
+    filtersLoaded,
     hiddenWatched,
     showWatched,
     bypassFilters,
@@ -986,7 +982,8 @@ export default function Feed({
         )}
       </main>
 
-      {(hydrating || loading || checking) && feed.length === 0 ? (
+      {(hydrating || !filtersLoaded || loading || checking) &&
+      feed.length === 0 ? (
         <p className="p-8 text-center text-slate-500 dark:text-slate-400">
           Loading your subscriptions…
         </p>
@@ -1002,6 +999,7 @@ export default function Feed({
         </p>
       ) : null}
       {!hydrating &&
+      filtersLoaded &&
       !loading &&
       !channelLoading &&
       ready &&
