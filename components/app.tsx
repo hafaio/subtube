@@ -122,7 +122,10 @@ export default function App(): ReactElement {
     );
   }
   return (
+    // keyed so switching accounts remounts rather than showing the previous
+    // user's cached feed while the new one loads
     <Feed
+      key={user.uid}
       user={user}
       ready={ready}
       checking={checking}

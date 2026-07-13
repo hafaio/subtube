@@ -10,14 +10,12 @@ export default function VideoCard({
   onOpen,
   onOpenChannel,
   onToggleWatched,
-  disabled = false,
 }: {
   video: Video;
   watched: boolean;
   onOpen: () => void;
   onOpenChannel: () => void;
   onToggleWatched: () => void;
-  disabled?: boolean;
 }): ReactElement {
   const published = new Date(video.publishedAt);
   return (
@@ -72,9 +70,8 @@ export default function VideoCard({
           <span>{published.toLocaleDateString()}</span>
           <button
             type="button"
-            className="flex items-center text-base hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-slate-200"
+            className="flex items-center text-base hover:text-slate-900 dark:hover:text-slate-200"
             onClick={onToggleWatched}
-            disabled={disabled}
             title={watched ? "Mark as unwatched" : "Mark as watched"}
             aria-label={watched ? "Mark as unwatched" : "Mark as watched"}
           >

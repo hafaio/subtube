@@ -62,6 +62,60 @@ import VideoCard from "./video-card";
 // so this is free relative to 15 and gives the regex tester more to preview.
 const UPLOADS_PER_CHANNEL = 50;
 const FETCH_CONCURRENCY = 6;
+/**
+ * A load costs quota (subscriptions + an uploads page per enabled channel), so
+ * returning to the app only refreshes a feed at least this stale.
+ */
+const REFRESH_STALE_MS = 10 * 60 * 1000;
+
+/**
+ * A watched write Firestore may not have made durable yet. The watched set is read
+ * at the start of a load and applied at its end, seconds later, so a write that
+ * wasn't already durable when the load began has to be re-applied over the result
+ * — otherwise that older snapshot reverts it.
+ */
+interface PendingWrite<Value> {
+  value: Value;
+  /** When Firestore acknowledged the write; null while it is still in flight. */
+  ackedAt: number | null;
+}
+
+/** Register a change as pending, before its (possibly debounced) write starts. */
+function trackPending<Key, Value>(
+  pending: Map<Key, PendingWrite<Value>>,
+  key: Key,
+  value: Value,
+): PendingWrite<Value> {
+  const entry: PendingWrite<Value> = { value, ackedAt: null };
+  pending.set(key, entry);
+  return entry;
+}
+
+/** Stamp a pending change once its write lands, whether or not it succeeded. */
+function settlePending<Value>(
+  entry: PendingWrite<Value>,
+  write: Promise<void>,
+): void {
+  void write.finally(() => {
+    // stamps this entry, not the map slot, which a newer change may have taken
+    entry.ackedAt = Date.now();
+  });
+}
+
+/**
+ * Forget the writes already durable when a load starting at `startedAt` read
+ * Firestore, since its result contains them. What's left raced that read.
+ */
+function prunePending<Key, Value>(
+  pending: Map<Key, PendingWrite<Value>>,
+  startedAt: number,
+): void {
+  for (const [key, entry] of pending) {
+    if (entry.ackedAt !== null && entry.ackedAt < startedAt) {
+      pending.delete(key);
+    }
+  }
+}
 
 async function mapWithConcurrency<Item, Result>(
   items: Item[],
@@ -167,6 +221,9 @@ export default function Feed({
   const [hiddenWatched, setHiddenWatched] = useState<Set<string>>(new Set());
   const [items, setItems] = useState<FeedItem[]>([]);
   const [loading, setLoading] = useState(false);
+  // true until the cached feed has been read back, so the empty states don't
+  // flash before the instant paint
+  const [hydrating, setHydrating] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showWatched, setShowWatched] = useState(false);
   const [bypassFilters, setBypassFilters] = useState(false);
@@ -191,6 +248,13 @@ export default function Feed({
   const [channelLoading, setChannelLoading] = useState(false);
   const [channelError, setChannelError] = useState<string | null>(null);
 
+  const loadInFlight = useRef(false);
+  // stamped on every load attempt, failures included, and compared against
+  // REFRESH_STALE_MS
+  const lastAttemptAt = useRef(0);
+  // whether a load has landed, so a slow cache read can't overwrite one that beat it
+  const feedApplied = useRef(false);
+  const pendingWatched = useRef<Map<string, PendingWrite<boolean>>>(new Map());
   // the listener's filters, for a load to diff against without re-reading them
   const syncedFilters = useRef<Map<string, ChannelFilter> | null>(null);
 
@@ -271,6 +335,13 @@ export default function Feed({
   );
 
   const loadFeed = useCallback(async () => {
+    if (loadInFlight.current) {
+      return;
+    }
+    loadInFlight.current = true;
+    // taken before the reads, so a write acknowledged earlier is guaranteed to be
+    // in what they return
+    const startedAt = Date.now();
     setLoading(true);
     setError(null);
     let token: string;
@@ -280,6 +351,8 @@ export default function Feed({
       onTokenLost();
       setError("Reconnect YouTube to load your feed.");
       setLoading(false);
+      lastAttemptAt.current = Date.now();
+      loadInFlight.current = false;
       return;
     }
     try {
@@ -293,10 +366,25 @@ export default function Feed({
         // The token died mid-load; mint a fresh one silently and retry once.
         data = await fetchEverything(await silentRefresh());
       }
+      // marks durable before this load read are already in `data`; the rest raced it
+      prunePending(pendingWatched.current, startedAt);
+      const loadedWatched = new Set(data.watched);
+      const loadedHidden = new Set(data.watched);
+      for (const [id, entry] of pendingWatched.current) {
+        if (entry.value) {
+          loadedWatched.add(id);
+        } else {
+          loadedWatched.delete(id);
+        }
+        // toggled during this load, so it stays on screen (dimmed) until the next
+        // one, like any other in-session mark
+        loadedHidden.delete(id);
+      }
       setSubscriptions(data.subscriptions);
-      setWatched(data.watched);
-      setHiddenWatched(data.watched);
+      setWatched(loadedWatched);
+      setHiddenWatched(loadedHidden);
       setItems(data.items);
+      feedApplied.current = true;
       // a partial load must not overwrite the good cache; surface a notice instead
       if (data.partial) {
         setNotice("Some channels couldn't be loaded; showing partial results.");
@@ -304,7 +392,7 @@ export default function Feed({
         setNotice(null);
         void saveCachedFeed(user.uid, {
           subscriptions: data.subscriptions,
-          watched: data.watched,
+          watched: loadedWatched,
           items: data.items,
           cachedAt: Date.now(),
         });
@@ -323,13 +411,59 @@ export default function Feed({
       }
     } finally {
       setLoading(false);
+      // stamped on failure too, so a load that keeps failing isn't retried on
+      // every return to the app
+      lastAttemptAt.current = Date.now();
+      loadInFlight.current = false;
     }
   }, [fetchEverything, onTokenLost, user.uid]);
+
+  // Paint the cached feed immediately; the load below refreshes it underneath.
+  useEffect(() => {
+    let cancelled = false;
+    void loadCachedFeed(user.uid).then((cached) => {
+      if (cancelled) {
+        return;
+      }
+      if (cached && !feedApplied.current) {
+        setSubscriptions(cached.subscriptions);
+        setWatched(cached.watched);
+        setHiddenWatched(cached.watched);
+        setItems(cached.items);
+      }
+      setHydrating(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user.uid]);
 
   useEffect(() => {
     if (ready) {
       void loadFeed();
     }
+  }, [ready, loadFeed]);
+
+  // Refresh a stale feed on returning to the app. `focus` as well as
+  // `visibilitychange` because switching windows doesn't change visibility.
+  useEffect(() => {
+    if (!ready) {
+      return;
+    }
+    const refreshIfStale = () => {
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - lastAttemptAt.current >= REFRESH_STALE_MS
+      ) {
+        void loadFeed();
+      }
+    };
+    document.addEventListener("visibilitychange", refreshIfStale);
+    window.addEventListener("focus", refreshIfStale);
+    return () => {
+      document.removeEventListener("visibilitychange", refreshIfStale);
+      window.removeEventListener("focus", refreshIfStale);
+    };
   }, [ready, loadFeed]);
 
   // Enabled channels are already in the loaded feed; only a disabled (or unknown)
@@ -432,6 +566,17 @@ export default function Feed({
     [user.uid],
   );
 
+  const persistWatched = useCallback(
+    (id: string, isWatched: boolean) => {
+      const entry = trackPending(pendingWatched.current, id, isWatched);
+      settlePending(
+        entry,
+        isWatched ? markWatched(user.uid, id) : unmarkWatched(user.uid, id),
+      );
+    },
+    [user.uid],
+  );
+
   const toggleWatched = useCallback(
     (item: FeedItem) => {
       const id = feedItemId(item);
@@ -445,13 +590,9 @@ export default function Feed({
         }
         return next;
       });
-      if (isWatched) {
-        void unmarkWatched(user.uid, id);
-      } else {
-        void markWatched(user.uid, id);
-      }
+      persistWatched(id, !isWatched);
     },
-    [user.uid, watched],
+    [persistWatched, watched],
   );
 
   // The player calls this when you leave a video (queue advance or close), so it
@@ -459,9 +600,9 @@ export default function Feed({
   const markItemWatched = useCallback(
     (id: string) => {
       setWatched((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
-      void markWatched(user.uid, id);
+      persistWatched(id, true);
     },
-    [user.uid],
+    [persistWatched],
   );
 
   const feed = useMemo(() => {
@@ -737,7 +878,6 @@ export default function Feed({
             <PlaylistCard
               key={item.playlistId}
               playlist={item}
-              disabled={loading}
               watched={watched.has(item.playlistId)}
               onOpen={() =>
                 open({
@@ -756,7 +896,6 @@ export default function Feed({
             <VideoCard
               key={item.videoId}
               video={item}
-              disabled={loading}
               watched={watched.has(item.videoId)}
               onOpen={() =>
                 open({
@@ -775,7 +914,7 @@ export default function Feed({
         )}
       </main>
 
-      {(loading || checking) && feed.length === 0 ? (
+      {(hydrating || loading || checking) && feed.length === 0 ? (
         <p className="p-8 text-center text-slate-500 dark:text-slate-400">
           Loading your subscriptions…
         </p>
@@ -790,7 +929,11 @@ export default function Feed({
           {channelError}
         </p>
       ) : null}
-      {!loading && !channelLoading && ready && feed.length === 0 ? (
+      {!hydrating &&
+      !loading &&
+      !channelLoading &&
+      ready &&
+      feed.length === 0 ? (
         <p className="p-8 text-center text-slate-500 dark:text-slate-400">
           No videos match your filters.
         </p>
@@ -798,7 +941,6 @@ export default function Feed({
 
       <ChannelFilters
         open={showFilters}
-        disabled={loading}
         channels={Array.from(channels.values())}
         latest={latestByChannel}
         items={items}
