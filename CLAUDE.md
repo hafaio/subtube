@@ -14,8 +14,8 @@ Mirrors `../hafaio.github.io` (tooling) and `../done` (Firebase): Next 15 App
 Router with `output: "export"` (static), React 19, Tailwind 4 (CSS-first:
 `@import "tailwindcss"`), biome (double quotes, organized imports, 2-space), bun.
 Deploys to GitHub Pages via `.github/workflows/` (reusable `build` + manual
-`deploy`). Firebase **Functions** (Node 24, ESM, v2 callables) hold the YouTube
-OAuth refresh flow + Shorts probe.
+`deploy`). Firebase **Functions** (Node 24, ESM) hold the YouTube OAuth refresh
+flow + the Shorts probe.
 
 **Comments**: `/** */` documents a *declaration* — a function, component, class,
 type or interface, **each of their fields**, and module-level constants — so
@@ -85,7 +85,10 @@ reasoning that belongs in a commit message. Don't comment the obvious.
   once. Every load is a background refresh over what's on screen (the UI stays
   live); returning to the app refreshes a feed older than `REFRESH_STALE_MS`. A
   watched toggle made mid-load is re-applied over the load's result (that read is
-  a point-in-time snapshot); filters need no such thing, being listener-driven.
+  a point-in-time snapshot); filters need no such thing, being listener-driven —
+  but a load only diffs subscriptions against filters the **server** has confirmed,
+  never a cache snapshot, which could mistake a filter for a new channel and reset
+  it.
 - `components/{video-card,playlist-card,channel-filters,player,login,...}.tsx` —
   UI. `next/image` with `images.unoptimized`; thumbnails guarded against empty
   src.
@@ -95,7 +98,10 @@ reasoning that belongs in a commit message. Don't comment the obvious.
 - **Server-side OAuth** (refresh token in `users/{uid}/private/**`, no client
   rule) instead of GIS silent re-mint, which Google removed. Browser holds only
   short-lived access tokens.
-- **Watched is self-tracked** in Firestore (YouTube removed the history API).
+- **Watched is self-tracked** in Firestore (YouTube removed the history API), and
+  read per-feed-window rather than listened to: Firestore bills a re-listen after
+  a 30-min disconnect as a fresh query, so a collection listener would re-read the
+  whole lifetime history every session.
 - **Shorts are database-driven, end to end.** The client only ever reads and
   writes Firestore: it listens to the `videoMeta` docs for the videos on screen,
   and *creating* a doc is how it asks for a missing one. The trigger fills it in;
@@ -106,6 +112,10 @@ reasoning that belongs in a commit message. Don't comment the obvious.
   concurrent probes share one billed second instead of each buying its own (~5×
   cheaper than a probe per invocation; both are pennies, but the drain is also
   what makes it self-healing).
+- **Only channels that keep or drop Shorts get classified at all.** A channel whose
+  Shorts filter is `all` never consults the verdict, so its videos are neither read
+  from `videoMeta` nor probed — for most channels the whole mechanism costs nothing
+  and never runs. (Trade: those cards carry no "Short" badge, since nothing knows.)
 - **An unclassified video is always visible**: the Shorts gate acts only on a
   verdict it has, so a video passes either way until one lands (it may then blink
   out of a channel that drops Shorts). A gate that held candidates back instead

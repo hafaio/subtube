@@ -61,7 +61,7 @@ export default function ChannelFilters({
 }: {
   open: boolean;
   channels: ChannelFilter[];
-  // channelId -> most recent item publishedAt, for ordering.
+  /** Each channel's most recent item's publishedAt, for ordering. */
   latest: Map<string, string>;
   items: FeedItem[];
   onChange: (filter: ChannelFilter) => void;
@@ -598,16 +598,21 @@ function RegexTester({
       : (fetched ?? []).filter((item) => item.kind === expectedKind);
 
   // Fill in any Shorts candidate still missing isShort, so the preview reflects
-  // the Shorts gate even for an on-demand fetch.
-  const pendingShortIds = list
-    .filter(
-      (item) =>
-        item.kind === "video" &&
-        item.isShort === undefined &&
-        !shortsOverlay.has(item.videoId) &&
-        isShortsCandidate(item),
-    )
-    .map(feedItemId);
+  // the Shorts gate even for an on-demand fetch. A filter keeping every kind never
+  // consults the verdict, so it isn't worth a read. Candidates already in the
+  // overlay stay in the set: dropping each as its verdict lands would rebuild the
+  // listeners on every arrival, re-reading the ids still outstanding.
+  const pendingShortIds =
+    compiled.shortsFilter === "all"
+      ? []
+      : list
+          .filter(
+            (item) =>
+              item.kind === "video" &&
+              item.isShort === undefined &&
+              isShortsCandidate(item),
+          )
+          .map(feedItemId);
   const pendingShortKey = pendingShortIds.join(",");
   useEffect(() => {
     if (!pendingShortKey) {

@@ -299,19 +299,24 @@ export default function Feed({
   }, []);
 
   /*
-   * Every video on screen that could be a Short. Includes the already-classified
-   * ones on purpose — a set that shrank as verdicts landed would tear down and
-   * rebuild the listeners on every arrival.
+   * The videos whose Short-ness is worth knowing: only a channel that keeps or
+   * drops Shorts consults the verdict, so the rest are never read or probed.
+   * Includes the already-classified ones on purpose — a set that shrank as
+   * verdicts landed would tear down and rebuild the listeners on every arrival.
    */
   const shortsCandidates = useMemo(() => {
     const ids = new Set<string>();
     for (const item of [...items, ...(channelItems?.items ?? [])]) {
-      if (item.kind === "video" && isShortsCandidate(item)) {
+      if (item.kind !== "video" || !isShortsCandidate(item)) {
+        continue;
+      }
+      const channel = channels.get(item.channelId);
+      if (channel && (channel.shortsFilter ?? "all") !== "all") {
         ids.add(item.videoId);
       }
     }
     return Array.from(ids).sort().join(",");
-  }, [items, channelItems]);
+  }, [items, channelItems, channels]);
 
   // Watch the candidates whose verdict we don't know; creating a document is how
   // an unknown one is asked about. Verdicts patch the cards as they arrive.
