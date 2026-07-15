@@ -1,24 +1,24 @@
 import { withVerdicts } from "./feed-item";
-import type { FeedItem } from "./types";
+import type { ChannelFilter, FeedItem } from "./types";
 
 /*
  * A tiny IndexedDB key/value store (one record per user) holding the last feed, so
  * a reload paints instantly while fresh data loads behind it. IndexedDB rather
  * than localStorage because the videos can exceed the ~5MB string cap, and
- * structured clone stores Maps/Sets directly. Only what Firestore doesn't hold
- * goes here — its own persistent cache covers the channel filters.
+ * structured clone stores Maps/Sets directly. The channel filters ride along so a
+ * reload filters the cached feed on the first frame, without waiting on a read.
  */
 const DB_NAME = "subtube";
 const STORE = "feed";
 /**
- * v2 dropped the stored filters; the upgrade discards v1 records rather than
- * migrating them, costing one blank load.
+ * v3 restored the stored filters (the feed reverted to a one-time filter load);
+ * each bump discards older records rather than migrating, costing one blank load.
  */
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export interface CachedFeed {
-  /** The channels subscribed to, in feed order; their filters live in Firestore. */
-  subscriptions: string[];
+  /** The subscribed channels with their filters, so a reload paints already filtered. */
+  channels: Map<string, ChannelFilter>;
   watched: Set<string>;
   items: FeedItem[];
   cachedAt: number;

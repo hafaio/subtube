@@ -34,7 +34,6 @@ import {
   signOutUser,
   syncSubscriptions,
   unmarkWatched,
-  watchChannelFilters,
 } from "../src/firebase";
 import { buildPlayQueue, type PlayQueue } from "../src/queue";
 import { useRoute } from "../src/router";
@@ -69,11 +68,6 @@ import VideoCard from "./video-card";
 // so this is free relative to 15 and gives the regex tester more to preview.
 const UPLOADS_PER_CHANNEL = 50;
 const FETCH_CONCURRENCY = 6;
-/**
- * A load costs quota (subscriptions + an uploads page per enabled channel), so
- * returning to the app only refreshes a feed at least this stale.
- */
-const REFRESH_STALE_MS = 10 * 60 * 1000;
 
 /**
  * A watched write Firestore may not have made durable yet. The watched set is read
@@ -165,8 +159,8 @@ async function enrichItems(
 }
 
 interface FeedData {
-  /** The channels currently subscribed to; their filters come from the listener. */
-  subscriptions: string[];
+  /** The subscribed channels with their filters, snapshotted at this load. */
+  channels: Map<string, ChannelFilter>;
   watched: Set<string>;
   items: FeedItem[];
   /**
@@ -193,18 +187,10 @@ export default function Feed({
   onDisconnect: () => Promise<void>;
   onTokenLost: () => void;
 }): ReactElement {
-  // every stored filter, including channels no longer subscribed to (their
-  // documents outlive the subscription), narrowed to `subscriptions` below
-  const [channelFilters, setChannelFilters] = useState<
-    Map<string, ChannelFilter>
-  >(new Map());
-  // whether the filter listener has delivered a snapshot, cached or not; until it
-  // has there is nothing to filter with, and the cached feed would paint unfiltered
-  const [filtersLoaded, setFiltersLoaded] = useState(false);
-  const [subscriptions, setSubscriptions] = useState<string[]>([]);
-  // edits whose debounced write hasn't been issued yet; once it is, Firestore
-  // replays it to the listener and the entry is dropped
-  const [filterEdits, setFilterEdits] = useState<Map<string, ChannelFilter>>(
+  // the subscribed channels with their filters, snapshotted at each load; edits
+  // apply here immediately and save to Firestore, but a remote change or a newly
+  // subscribed channel only appears on the next load
+  const [channels, setChannels] = useState<Map<string, ChannelFilter>>(
     new Map(),
   );
   const [watched, setWatched] = useState<Set<string>>(new Set());
@@ -241,42 +227,11 @@ export default function Feed({
   const [channelError, setChannelError] = useState<string | null>(null);
 
   const loadInFlight = useRef(false);
-  // stamped on every load attempt, failures included, and compared against
-  // REFRESH_STALE_MS
-  const lastAttemptAt = useRef(0);
   // whether a load has landed, so a slow cache read can't overwrite one that beat it
   const feedApplied = useRef(false);
   // Short-ness never changes, so verdicts carry across loads
   const shortsVerdicts = useRef<Map<string, boolean>>(new Map());
   const pendingWatched = useRef<Map<string, PendingWrite<boolean>>>(new Map());
-  // the listener's filters, for a load to diff against without re-reading them
-  const syncedFilters = useRef<Map<string, ChannelFilter> | null>(null);
-
-  useEffect(
-    () =>
-      watchChannelFilters(user.uid, (filters, synced) => {
-        setChannelFilters(filters);
-        setFiltersLoaded(true);
-        if (synced) {
-          syncedFilters.current = filters;
-        }
-      }),
-    [user.uid],
-  );
-
-  // the subscribed channels, each with its stored filter or the edit still on its
-  // way to Firestore
-  const channels = useMemo(() => {
-    const merged = new Map<string, ChannelFilter>();
-    for (const channelId of subscriptions) {
-      const filter =
-        filterEdits.get(channelId) ?? channelFilters.get(channelId);
-      if (filter) {
-        merged.set(channelId, filter);
-      }
-    }
-    return merged;
-  }, [subscriptions, channelFilters, filterEdits]);
 
   const rememberVerdicts = useCallback((enriched: FeedItem[]) => {
     for (const item of enriched) {
@@ -335,12 +290,7 @@ export default function Feed({
   const fetchEverything = useCallback(
     async (token: string): Promise<FeedData> => {
       const subscribed = await fetchSubscriptions(token);
-      // The listener's filters, once the server has confirmed them, are the same
-      // documents a read would return. Before that they may be a stale cache, and
-      // syncSubscriptions would mistake a missing filter for a new channel and
-      // overwrite it with defaults — so that case still pays for the read.
-      const existing =
-        syncedFilters.current ?? (await loadChannelFilters(user.uid));
+      const existing = await loadChannelFilters(user.uid);
       const merged = await syncSubscriptions(user.uid, subscribed, existing);
 
       const enabled = Array.from(merged.values()).filter(
@@ -379,7 +329,7 @@ export default function Feed({
       );
       rememberVerdicts(enriched.items);
       return {
-        subscriptions: Array.from(merged.keys()),
+        channels: merged,
         watched: enriched.watched,
         items: enriched.items,
         partial: failed > 0,
@@ -405,7 +355,6 @@ export default function Feed({
       onTokenLost();
       setError("Reconnect YouTube to load your feed.");
       setLoading(false);
-      lastAttemptAt.current = Date.now();
       loadInFlight.current = false;
       return;
     }
@@ -434,7 +383,7 @@ export default function Feed({
         // one, like any other in-session mark
         loadedHidden.delete(id);
       }
-      setSubscriptions(data.subscriptions);
+      setChannels(data.channels);
       setWatched(loadedWatched);
       setHiddenWatched(loadedHidden);
       setItems(data.items);
@@ -445,7 +394,7 @@ export default function Feed({
       } else {
         setNotice(null);
         void saveCachedFeed(user.uid, {
-          subscriptions: data.subscriptions,
+          channels: data.channels,
           watched: loadedWatched,
           items: data.items,
           cachedAt: Date.now(),
@@ -465,9 +414,6 @@ export default function Feed({
       }
     } finally {
       setLoading(false);
-      // stamped on failure too, so a load that keeps failing isn't retried on
-      // every return to the app
-      lastAttemptAt.current = Date.now();
       loadInFlight.current = false;
     }
   }, [fetchEverything, onTokenLost, user.uid]);
@@ -480,7 +426,7 @@ export default function Feed({
         return;
       }
       if (cached && !feedApplied.current) {
-        setSubscriptions(cached.subscriptions);
+        setChannels(cached.channels);
         setWatched(cached.watched);
         setHiddenWatched(cached.watched);
         setItems(cached.items);
@@ -493,32 +439,12 @@ export default function Feed({
     };
   }, [user.uid, rememberVerdicts]);
 
+  // A load runs once on connect and thereafter only when asked — the Refresh
+  // button or a page reload. Returning to the app shows the last-loaded feed.
   useEffect(() => {
     if (ready) {
       void loadFeed();
     }
-  }, [ready, loadFeed]);
-
-  // Refresh a stale feed on returning to the app. `focus` as well as
-  // `visibilitychange` because switching windows doesn't change visibility.
-  useEffect(() => {
-    if (!ready) {
-      return;
-    }
-    const refreshIfStale = () => {
-      if (
-        document.visibilityState === "visible" &&
-        Date.now() - lastAttemptAt.current >= REFRESH_STALE_MS
-      ) {
-        void loadFeed();
-      }
-    };
-    document.addEventListener("visibilitychange", refreshIfStale);
-    window.addEventListener("focus", refreshIfStale);
-    return () => {
-      document.removeEventListener("visibilitychange", refreshIfStale);
-      window.removeEventListener("focus", refreshIfStale);
-    };
   }, [ready, loadFeed]);
 
   // Enabled channels are already in the loaded feed; only a disabled (or unknown)
@@ -600,7 +526,7 @@ export default function Feed({
   const persistTimers = useRef<Map<string, number>>(new Map());
   const updateFilter = useCallback(
     (filter: ChannelFilter) => {
-      setFilterEdits((prev) => new Map(prev).set(filter.channelId, filter));
+      setChannels((prev) => new Map(prev).set(filter.channelId, filter));
       const timers = persistTimers.current;
       const pending = timers.get(filter.channelId);
       if (pending) {
@@ -609,17 +535,7 @@ export default function Feed({
       timers.set(
         filter.channelId,
         window.setTimeout(() => {
-          void saveChannelFilter(user.uid, filter).finally(() => {
-            // the listener carries this value now, unless a newer edit is waiting
-            setFilterEdits((prev) => {
-              if (prev.get(filter.channelId) !== filter) {
-                return prev;
-              }
-              const next = new Map(prev);
-              next.delete(filter.channelId);
-              return next;
-            });
-          });
+          void saveChannelFilter(user.uid, filter);
           timers.delete(filter.channelId);
         }, 600),
       );
@@ -667,12 +583,6 @@ export default function Feed({
   );
 
   const feed = useMemo(() => {
-    // Painting before the filters arrive would show every cached item, filtered by
-    // nothing, for as long as Firestore's cache takes to answer — a channel page
-    // has no `enabled` check to hide them behind.
-    if (!filtersLoaded) {
-      return [];
-    }
     const compiled = new Map(
       Array.from(channels.values()).map((channel) => [
         channel.channelId,
@@ -712,7 +622,6 @@ export default function Feed({
     onDemandChannel,
     channelMode,
     channels,
-    filtersLoaded,
     hiddenWatched,
     showWatched,
     bypassFilters,
@@ -982,8 +891,7 @@ export default function Feed({
         )}
       </main>
 
-      {(hydrating || !filtersLoaded || loading || checking) &&
-      feed.length === 0 ? (
+      {(hydrating || loading || checking) && feed.length === 0 ? (
         <p className="p-8 text-center text-slate-500 dark:text-slate-400">
           Loading your subscriptions…
         </p>
@@ -999,7 +907,6 @@ export default function Feed({
         </p>
       ) : null}
       {!hydrating &&
-      filtersLoaded &&
       !loading &&
       !channelLoading &&
       ready &&

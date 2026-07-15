@@ -12,11 +12,9 @@ import {
   doc,
   documentId,
   getDocs,
-  onSnapshot,
   type QuerySnapshot,
   query,
   setDoc,
-  type Unsubscribe,
   where,
 } from "firebase/firestore";
 import { firebaseApp, firestoreDb } from "./firebase-app";
@@ -58,29 +56,11 @@ function toFilterMap(snapshot: QuerySnapshot): Map<string, ChannelFilter> {
 }
 
 /**
- * Live view of the stored channel filters, including channels no longer
- * subscribed to (the caller narrows to the current subscriptions). Firestore
- * replays a local write to this listener as it's issued, so an edit never races a
- * point-in-time read.
- *
- * `synced` distinguishes a snapshot the server has confirmed from one served out
- * of the local cache, which may predate filters written on another device.
- * Metadata changes are included so the confirmation arrives even when the server
- * turns out to agree with the cache.
+ * A one-time read of the stored channel filters, including channels no longer
+ * subscribed to (the caller narrows to the current subscriptions). Read once per
+ * feed load rather than listened to, so the feed only changes on a manual refresh
+ * — an edit made on another device shows up on the next load, not live.
  */
-export function watchChannelFilters(
-  userId: string,
-  onFilters: (filters: Map<string, ChannelFilter>, synced: boolean) => void,
-): Unsubscribe {
-  return onSnapshot(
-    channelsCollection(userId),
-    { includeMetadataChanges: true },
-    (snapshot) => {
-      onFilters(toFilterMap(snapshot), !snapshot.metadata.fromCache);
-    },
-  );
-}
-
 export async function loadChannelFilters(
   userId: string,
 ): Promise<Map<string, ChannelFilter>> {
