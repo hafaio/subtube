@@ -43,9 +43,10 @@ reasoning that belongs in a commit message. Don't comment the obvious.
   its **persistent (IndexedDB) cache**, so listeners paint before the server
   answers and a local write shows up immediately.
 - `src/firebase.ts` — Firebase Auth (identity) + Firestore helpers. `channels/`,
-  `watched/` (owner-only). `watchChannelFilters` is a live listener (filters sync
-  across devices); `loadWatchedFor` stays a one-shot query over only the loaded
-  ids (`documentId() in`, 30/chunk) instead of the whole collection.
+  `watched/` (owner-only). `loadChannelFilters` is a one-shot read per feed load
+  (not a listener — a remote filter edit lands on the next refresh, not live);
+  `loadWatchedFor` is likewise a one-shot query over only the loaded ids
+  (`documentId() in`, 30/chunk) instead of the whole collection.
 - `src/youtube-auth.ts` / `src/youtube-token.ts` — server-side OAuth: the connect
   popup runs the Authorization-Code flow, the code is exchanged in a callable,
   the refresh token is stored server-only, and the in-memory access token is
@@ -76,26 +77,27 @@ reasoning that belongs in a commit message. Don't comment the obvious.
 - `src/router.ts` — query-string router: a `channel` background + an optional
   open `item` (video/playlist). `?channel=x&v=y` keeps the channel behind the
   player; Back closes.
-- `src/feed-cache.ts` — IndexedDB stale-while-revalidate cache for what Firestore
-  can't hold: the YouTube items + the subscribed channel ids (v2; filters moved to
-  Firestore's own cache). Shorts verdicts are folded into it as they arrive
-  (`cacheShortsVerdicts`), since they land *after* the load that wrote the cache —
-  a cache that never learned them replays those videos as unclassified, and an
-  unclassified video is shown, so a dropped Short would flash in and out on every
-  reload.
-- `components/feed.tsx` — workhorse: hydrate from the cache, then load →
-  `enrichItems` (watched + known Shorts verdicts) → filter/sort grid; channel
-  pages (scoped feed, on-demand fetch for disabled); mid-load 401 silent-refreshes
-  once. Every load is a background refresh over what's on screen (the UI stays
-  live); returning to the app refreshes a feed older than `REFRESH_STALE_MS`. A
-  watched toggle made mid-load is re-applied over the load's result (that read is
-  a point-in-time snapshot); filters need no such thing, being listener-driven —
-  but a load only diffs subscriptions against filters the **server** has confirmed,
-  never a cache snapshot, which could mistake a filter for a new channel and reset
-  it. The grid stays empty until the filter listener's first snapshot (cache-served,
-  so ~instant): with no filters there is nothing to filter *with*, and a channel
-  page — which has no `enabled` check to hide behind — would paint the whole cached
-  feed unfiltered.
+- `src/feed-cache.ts` — IndexedDB stale-while-revalidate cache (v3) for what
+  Firestore's own cache can't paint synchronously with the items: the YouTube
+  items + the subscribed channels **with their filters**, so a reload filters the
+  cached feed on the first frame instead of flashing it unfiltered while a read
+  resolves. Shorts verdicts are folded in as they arrive (`cacheShortsVerdicts`),
+  since they land *after* the load that wrote the cache — a cache that never
+  learned them replays those videos as unclassified, and an unclassified video is
+  shown, so a dropped Short would flash in and out on every reload.
+- `components/feed.tsx` — workhorse: hydrate from the cache (items **and**
+  filters, so the first frame is already filtered), then load → `enrichItems`
+  (watched + known Shorts verdicts) → filter/sort grid; channel pages (scoped
+  feed, on-demand fetch for disabled); mid-load 401 silent-refreshes once. A load
+  runs once on connect and thereafter **only when asked** — the Refresh button or
+  a page reload; returning to the app shows the last-loaded feed, it doesn't
+  re-fetch. Filters are snapshotted at each load (one-shot `loadChannelFilters`),
+  not streamed: an edit applies to `channels` locally and saves to Firestore, but
+  a remote change waits for the next load — so the feed never re-filters on its
+  own. Shorts stay listener-driven (`watchShortsVerdicts`), the one thing that
+  arrives after the load and patches the cards in place. A watched toggle made
+  mid-load is re-applied over the load's result (that read is a point-in-time
+  snapshot).
 - `components/{video-card,playlist-card,channel-filters,player,login,...}.tsx` —
   UI. `next/image` with `images.unoptimized`; thumbnails guarded against empty
   src.
