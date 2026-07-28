@@ -686,11 +686,15 @@ export default function Feed({
     }
   }, [feed, watched, channelView, open, onTokenLost]);
 
+  // Every kind of in-flight work reads out through the Refresh icon, the one
+  // loading indicator in the header — including restoring access, which is the
+  // expected path on load and so gets no banner of its own.
+  const busy = loading || checking || connecting || channelLoading;
+
   const amberTone =
     "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200";
-  // Restoring access (checking) is the expected path, so it gets a quiet spinner
-  // rather than a banner. The banner is only for actionable states: an error, or
-  // a not-yet-connected prompt — both paired with the Connect button.
+  // The banner is only for actionable states: an error, or a not-yet-connected
+  // prompt — both paired with the Connect button.
   const statusBanner = error
     ? {
         tone: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200",
@@ -739,19 +743,13 @@ export default function Feed({
             type="button"
             className="flex items-center rounded p-1.5 hover:bg-slate-100 disabled:opacity-50 dark:hover:bg-slate-800"
             onClick={() => void loadFeed()}
-            disabled={loading || !ready}
-            title="Refresh"
+            disabled={busy || !ready}
+            title={busy ? "Loading…" : "Refresh"}
             aria-label="Refresh"
+            aria-busy={busy}
           >
-            <MdRefresh className={loading ? "animate-spin" : ""} />
+            <MdRefresh className={busy ? "animate-spin" : ""} />
           </button>
-          {checking || connecting ? (
-            <span
-              role="status"
-              aria-label="Restoring access"
-              className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-slate-500 dark:border-slate-700 dark:border-t-slate-300"
-            />
-          ) : null}
           <button
             type="button"
             className="flex items-center rounded p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800"
