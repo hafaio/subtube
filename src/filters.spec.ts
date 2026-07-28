@@ -134,19 +134,26 @@ describe("videoPassesFilter — video-only gates", () => {
     ).toBe(false);
   });
 
-  test("an unclassified video passes the Shorts gate either way", () => {
+  test("an unclassified video is held back by either Shorts gate", () => {
     expect(
       passes(
         video({ isShort: undefined }),
         channel({ shortsFilter: "normal" }),
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       passes(
         video({ isShort: undefined }),
         channel({ shortsFilter: "shorts" }),
       ),
+    ).toBe(false);
+  });
+
+  test("a channel keeping every kind never consults the verdict", () => {
+    expect(
+      passes(video({ isShort: undefined }), channel({ shortsFilter: "all" })),
     ).toBe(true);
+    expect(passes(video({ isShort: true }), channel())).toBe(true);
   });
 });
 

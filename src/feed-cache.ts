@@ -75,9 +75,9 @@ export async function saveCachedFeed(
 /**
  * Fold Shorts verdicts into the cached feed as they arrive. They land after the
  * load that saved it, so a cache that never learned them paints those videos as
- * unclassified — and an unclassified video is always shown, so the next reload
- * would flash a dropped Short into the feed and back out again once the verdict
- * re-arrived. Short-ness never changes, so a stored verdict never goes stale.
+ * unclassified — and a channel filtering on Shorts hides those, so the next
+ * reload would open on a hole in the feed that fills in a moment later.
+ * Short-ness never changes, so a stored verdict never goes stale.
  */
 export async function cacheShortsVerdicts(
   uid: string,

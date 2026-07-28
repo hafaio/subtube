@@ -261,6 +261,23 @@ export default function Feed({
     return Array.from(ids).sort().join(",");
   }, [items, channelItems, channels]);
 
+  /*
+   * Whether the Shorts gate is holding anything back: a channel that filters on
+   * Shorts hides a video until its verdict lands, so the feed isn't complete
+   * while one is outstanding — and may never be, since an inconclusive probe
+   * deletes the document instead of caching a guess.
+   */
+  const pendingVerdicts = useMemo(
+    () =>
+      [...items, ...(channelItems?.items ?? [])].some(
+        (item) =>
+          item.kind === "video" &&
+          item.isShort === undefined &&
+          (channels.get(item.channelId)?.shortsFilter ?? "all") !== "all",
+      ),
+    [items, channelItems, channels],
+  );
+
   // Watch the candidates whose verdict we don't know; creating a document is how
   // an unknown one is asked about. Verdicts patch the cards as they arrive.
   useEffect(() => {
@@ -688,8 +705,10 @@ export default function Feed({
 
   // Every kind of in-flight work reads out through the Refresh icon, the one
   // loading indicator in the header — including restoring access, which is the
-  // expected path on load and so gets no banner of its own.
-  const busy = loading || checking || connecting || channelLoading;
+  // expected path on load and so gets no banner of its own. Spinning doesn't
+  // disable it: only a feed load already in flight makes clicking a no-op.
+  const spinning =
+    loading || checking || connecting || channelLoading || pendingVerdicts;
 
   const amberTone =
     "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200";
@@ -743,12 +762,12 @@ export default function Feed({
             type="button"
             className="flex items-center rounded p-1.5 hover:bg-slate-100 disabled:opacity-50 dark:hover:bg-slate-800"
             onClick={() => void loadFeed()}
-            disabled={busy || !ready}
-            title={busy ? "Loading…" : "Refresh"}
+            disabled={loading || !ready}
+            title={spinning ? "Loading…" : "Refresh"}
             aria-label="Refresh"
-            aria-busy={busy}
+            aria-busy={spinning}
           >
-            <MdRefresh className={busy ? "animate-spin" : ""} />
+            <MdRefresh className={spinning ? "animate-spin" : ""} />
           </button>
           <button
             type="button"
@@ -889,7 +908,8 @@ export default function Feed({
         )}
       </main>
 
-      {(hydrating || loading || checking) && feed.length === 0 ? (
+      {(hydrating || loading || checking || pendingVerdicts) &&
+      feed.length === 0 ? (
         <p className="p-8 text-center text-slate-500 dark:text-slate-400">
           Loading your subscriptions…
         </p>
@@ -907,6 +927,7 @@ export default function Feed({
       {!hydrating &&
       !loading &&
       !channelLoading &&
+      !pendingVerdicts &&
       ready &&
       feed.length === 0 ? (
         <p className="p-8 text-center text-slate-500 dark:text-slate-400">
