@@ -83,8 +83,9 @@ reasoning that belongs in a commit message. Don't comment the obvious.
   cached feed on the first frame instead of flashing it unfiltered while a read
   resolves. Shorts verdicts are folded in as they arrive (`cacheShortsVerdicts`),
   since they land *after* the load that wrote the cache — a cache that never
-  learned them replays those videos as unclassified, and an unclassified video is
-  shown, so a dropped Short would flash in and out on every reload.
+  learned them replays those videos as unclassified, and a channel gating on
+  Shorts hides those, so every reload would open on a hole that fills in a moment
+  later.
 - `components/feed.tsx` — workhorse: hydrate from the cache (items **and**
   filters, so the first frame is already filtered), then load → `enrichItems`
   (watched + known Shorts verdicts) → filter/sort grid; channel pages (scoped
@@ -125,12 +126,13 @@ reasoning that belongs in a commit message. Don't comment the obvious.
   Shorts filter is `all` never consults the verdict, so its videos are neither read
   from `videoMeta` nor probed — for most channels the whole mechanism costs nothing
   and never runs. (Trade: those cards carry no "Short" badge, since nothing knows.)
-- **An unclassified video is always visible**: the Shorts gate acts only on a
-  verdict it has, so a video passes either way until one lands (it may then blink
-  out of a channel that drops Shorts). A gate that held candidates back instead
-  would hide a video *forever* whenever a verdict never came — and a queue only
-  drains when some client asks about something new, so "never" is reachable.
-  Showing a Short by mistake for a second beats losing a video permanently.
+- **A channel that gates on Shorts hides what it can't yet judge**: an
+  unclassified candidate is held back until a verdict lands, so a Short never
+  blinks into (or out of) a feed that filters them. The cost is that a video
+  whose verdict never comes (an inconclusive probe deletes the doc) stays hidden,
+  so the Refresh icon keeps spinning while any candidate is outstanding — and
+  stays *clickable*, since a reload is the only way out of that state. Channels
+  with `shortsFilter: "all"` never consult a verdict and so are never affected.
 - **Playlists/channel pages reuse the feed pipeline**; the broadcast/Shorts gates
   no-op on playlists.
 - **Keep the official IFrame player** so ads serve and views count (intentional,
