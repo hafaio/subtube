@@ -81,14 +81,23 @@ reasoning that belongs in a commit message. Don't comment the obvious.
   Firestore's own cache can't paint synchronously with the items: the YouTube
   items + the subscribed channels **with their filters**, so a reload filters the
   cached feed on the first frame instead of flashing it unfiltered while a read
-  resolves. Shorts verdicts are folded in as they arrive (`cacheShortsVerdicts`),
+  resolves. Watched marks are folded in as they're made (`cacheWatched`) — the
+  whole-feed save only happens at the end of a load, so without that a reload
+  would repaint every mark since as unwatched. Shorts verdicts are folded in as
+  they arrive (`cacheShortsVerdicts`),
   since they land *after* the load that wrote the cache — a cache that never
   learned them replays those videos as unclassified, and a channel gating on
   Shorts hides those, so every reload would open on a hole that fills in a moment
   later.
 - `components/feed.tsx` — workhorse: hydrate from the cache (items **and**
   filters, so the first frame is already filtered), then load → `enrichItems`
-  (watched + known Shorts verdicts) → filter/sort grid; channel pages (scoped
+  (watched + known Shorts verdicts) → filter/sort grid. A load **paints as it
+  goes** (`LoadSink`): the channels land first, then each channel's items swap
+  into the grid as that channel returns, rather than every tile staying stale
+  until the slowest one does; the final assignment prunes what no channel
+  claimed. The Shorts listeners are held still while a load is in flight, since
+  the candidate set grows with every channel and re-subscribing per channel would
+  re-read every verdict. Channel pages (scoped
   feed, on-demand fetch for disabled); mid-load 401 silent-refreshes once. A load
   runs once on connect and thereafter **only when asked** — the Refresh button or
   a page reload; returning to the app shows the last-loaded feed, it doesn't
