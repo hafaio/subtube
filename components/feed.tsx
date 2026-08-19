@@ -21,6 +21,7 @@ import {
 } from "react-icons/md";
 import {
   cacheShortsVerdicts,
+  cacheWatched,
   loadCachedFeed,
   saveCachedFeed,
 } from "../src/feed-cache";
@@ -158,6 +159,25 @@ async function enrichItems(
   return { items: withShorts, watched };
 }
 
+/**
+ * Swap one channel's freshly loaded items into a feed, so a load can paint each
+ * channel as it lands instead of at the end. Drops what they replace: that
+ * channel's previous items, and any entry that has since moved to it.
+ */
+function replaceChannelItems(
+  items: FeedItem[],
+  channelId: string,
+  fresh: FeedItem[],
+): FeedItem[] {
+  const ids = new Set(fresh.map(feedItemId));
+  return [
+    ...items.filter(
+      (item) => item.channelId !== channelId && !ids.has(feedItemId(item)),
+    ),
+    ...fresh,
+  ];
+}
+
 interface FeedData {
   /** The subscribed channels with their filters, snapshotted at this load. */
   channels: Map<string, ChannelFilter>;
@@ -168,6 +188,17 @@ interface FeedData {
    * result partial — it must not overwrite the cache.
    */
   partial: boolean;
+}
+
+/** Where a load publishes its results as they arrive, before it has finished. */
+interface LoadSink {
+  /** The subscribed channels with their filters, known before any items are. */
+  channels: (channels: Map<string, ChannelFilter>) => void;
+  /** One channel's items with the watched state read for them. */
+  channelItems: (
+    channelId: string,
+    loaded: { items: FeedItem[]; watched: Set<string> },
+  ) => void;
 }
 
 export default function Feed({
@@ -242,6 +273,63 @@ export default function Feed({
   }, []);
 
   /*
+   * Apply the watched state a load read for one batch of items. The batch is
+   * authoritative for its own ids, except where a mark made during the load raced
+   * that read: that one stays applied, and stays on screen (dimmed) until the
+   * next load, like any other in-session mark.
+   */
+  const applyWatchedBatch = useCallback(
+    (batch: FeedItem[], loaded: Set<string>) => {
+      const ids = batch.map(feedItemId);
+      const pending = pendingWatched.current;
+      setWatched((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) {
+          const raced = pending.get(id);
+          if (raced ? raced.value : loaded.has(id)) {
+            next.add(id);
+          } else {
+            next.delete(id);
+          }
+        }
+        return next;
+      });
+      setHiddenWatched((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) {
+          if (loaded.has(id) && !pending.has(id)) {
+            next.add(id);
+          } else {
+            next.delete(id);
+          }
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  /*
+   * A load paints through here as it goes, so a refresh over dozens of channels
+   * updates the tiles it has instead of leaving all of them stale until the
+   * slowest channel returns. What no channel claimed is pruned when it finishes.
+   */
+  const sink = useMemo<LoadSink>(
+    () => ({
+      channels: (loaded) => {
+        feedApplied.current = true;
+        setChannels(loaded);
+      },
+      channelItems: (channelId, loaded) => {
+        feedApplied.current = true;
+        setItems((prev) => replaceChannelItems(prev, channelId, loaded.items));
+        applyWatchedBatch(loaded.items, loaded.watched);
+      },
+    }),
+    [applyWatchedBatch],
+  );
+
+  /*
    * The videos whose Short-ness is worth knowing: only a channel that keeps or
    * drops Shorts consults the verdict, so the rest are never read or probed.
    * Includes the already-classified ones on purpose — a set that shrank as
@@ -278,10 +366,22 @@ export default function Feed({
     [items, channelItems, channels],
   );
 
+  /*
+   * The candidate set the listeners are built from, held still while a load is in
+   * flight: it grows with every channel that lands, and re-subscribing on each one
+   * would re-read every verdict from the server that many times over.
+   */
+  const [settledCandidates, setSettledCandidates] = useState("");
+  useEffect(() => {
+    if (!loading) {
+      setSettledCandidates(shortsCandidates);
+    }
+  }, [loading, shortsCandidates]);
+
   // Watch the candidates whose verdict we don't know; creating a document is how
   // an unknown one is asked about. Verdicts patch the cards as they arrive.
   useEffect(() => {
-    const candidates = shortsCandidates
+    const candidates = settledCandidates
       .split(",")
       .filter((videoId) => videoId && !shortsVerdicts.current.has(videoId));
     if (candidates.length === 0) {
@@ -302,31 +402,35 @@ export default function Feed({
         void requestShortsClassification(missing);
       }
     });
-  }, [shortsCandidates, user.uid]);
+  }, [settledCandidates, user.uid]);
 
   const fetchEverything = useCallback(
-    async (token: string): Promise<FeedData> => {
+    async (token: string, publish: LoadSink): Promise<FeedData> => {
       const subscribed = await fetchSubscriptions(token);
       const existing = await loadChannelFilters(user.uid);
       const merged = await syncSubscriptions(user.uid, subscribed, existing);
+      publish.channels(merged);
 
       const enabled = Array.from(merged.values()).filter(
         (channel) => channel.enabled,
       );
       let failed = 0;
+      const watched = new Set<string>();
       const loaded = await mapWithConcurrency(
         enabled,
         FETCH_CONCURRENCY,
         async (channel) => {
+          let fetched: FeedItem[];
           try {
-            return channel.contentMode === "playlists"
-              ? await fetchPlaylists(channel.channelId, channel.title, token)
-              : await fetchUploads(
-                  channel.channelId,
-                  channel.title,
-                  token,
-                  UPLOADS_PER_CHANNEL,
-                );
+            fetched =
+              channel.contentMode === "playlists"
+                ? await fetchPlaylists(channel.channelId, channel.title, token)
+                : await fetchUploads(
+                    channel.channelId,
+                    channel.title,
+                    token,
+                    UPLOADS_PER_CHANNEL,
+                  );
           } catch (caught) {
             if (
               caught instanceof TokenExpiredError ||
@@ -335,20 +439,26 @@ export default function Feed({
               throw caught;
             }
             failed++;
+            // leaves this channel's items as they were until the load finishes
             return [] as FeedItem[];
           }
+          const enriched = await enrichItems(
+            user.uid,
+            fetched,
+            shortsVerdicts.current,
+          );
+          rememberVerdicts(enriched.items);
+          for (const id of enriched.watched) {
+            watched.add(id);
+          }
+          publish.channelItems(channel.channelId, enriched);
+          return enriched.items;
         },
       );
-      const enriched = await enrichItems(
-        user.uid,
-        loaded.flat(),
-        shortsVerdicts.current,
-      );
-      rememberVerdicts(enriched.items);
       return {
         channels: merged,
-        watched: enriched.watched,
-        items: enriched.items,
+        watched,
+        items: loaded.flat(),
         partial: failed > 0,
       };
     },
@@ -361,8 +471,9 @@ export default function Feed({
     }
     loadInFlight.current = true;
     // taken before the reads, so a write acknowledged earlier is guaranteed to be
-    // in what they return
+    // in what they return; the rest raced them and is re-applied over the result
     const startedAt = Date.now();
+    prunePending(pendingWatched.current, startedAt);
     setLoading(true);
     setError(null);
     let token: string;
@@ -378,16 +489,14 @@ export default function Feed({
     try {
       let data: FeedData;
       try {
-        data = await fetchEverything(token);
+        data = await fetchEverything(token, sink);
       } catch (caught) {
         if (!(caught instanceof TokenExpiredError)) {
           throw caught;
         }
         // The token died mid-load; mint a fresh one silently and retry once.
-        data = await fetchEverything(await silentRefresh());
+        data = await fetchEverything(await silentRefresh(), sink);
       }
-      // marks durable before this load read are already in `data`; the rest raced it
-      prunePending(pendingWatched.current, startedAt);
       const loadedWatched = new Set(data.watched);
       const loadedHidden = new Set(data.watched);
       for (const [id, entry] of pendingWatched.current) {
@@ -433,7 +542,7 @@ export default function Feed({
       setLoading(false);
       loadInFlight.current = false;
     }
-  }, [fetchEverything, onTokenLost, user.uid]);
+  }, [fetchEverything, sink, onTokenLost, user.uid]);
 
   // Paint the cached feed immediately; the load below refreshes it underneath.
   useEffect(() => {
@@ -567,6 +676,7 @@ export default function Feed({
         entry,
         isWatched ? markWatched(user.uid, id) : unmarkWatched(user.uid, id),
       );
+      void cacheWatched(user.uid, id, isWatched);
     },
     [user.uid],
   );

@@ -73,6 +73,45 @@ export async function saveCachedFeed(
 }
 
 /**
+ * Fold a watched change into the cached feed as it is made. The whole-feed save
+ * only happens at the end of a load, so without this a reload would repaint every
+ * mark since that load as unwatched until the next one finished reading them back.
+ */
+export async function cacheWatched(
+  uid: string,
+  id: string,
+  isWatched: boolean,
+): Promise<void> {
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      // One transaction for the read and the write, so a whole-feed save can't
+      // land between them and be overwritten by what it replaced.
+      const transaction = db.transaction(STORE, "readwrite");
+      const store = transaction.objectStore(STORE);
+      const request = store.get(uid);
+      request.onsuccess = () => {
+        const cached = request.result as CachedFeed | undefined;
+        if (!cached || cached.watched.has(id) === isWatched) {
+          return;
+        }
+        const watched = new Set(cached.watched);
+        if (isWatched) {
+          watched.add(id);
+        } else {
+          watched.delete(id);
+        }
+        store.put({ ...cached, watched }, uid);
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+  } catch {
+    // Best-effort; the next full save carries the mark anyway.
+  }
+}
+
+/**
  * Fold Shorts verdicts into the cached feed as they arrive. They land after the
  * load that saved it, so a cache that never learned them paints those videos as
  * unclassified — and a channel filtering on Shorts hides those, so the next
