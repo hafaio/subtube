@@ -5,8 +5,7 @@ updates:
     schedule:
       interval: monthly
 
-  # bun lockfile support is limited, so this only surfaces package.json range bumps
-  - package-ecosystem: npm
+  - package-ecosystem: bun
     directory: /
     schedule:
       interval: monthly
